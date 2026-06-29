@@ -9,6 +9,7 @@ window.__MESHY_EXPORT_STUDIO_STARTED__ = true;
 
 const CHUNK_SIZE = 512 * 1024;
 const params = new URLSearchParams(window.location.search);
+const exportSessionId = params.get("sessionId") || "";
 const sourceTabId = Number(params.get("sourceTabId") || 0);
 const requestedModelId = params.get("modelId") || "";
 
@@ -82,12 +83,12 @@ function bindEvents() {
 }
 
 async function init() {
-  if (!Number.isInteger(sourceTabId) || sourceTabId <= 0) {
+  if (!exportSessionId && (!Number.isInteger(sourceTabId) || sourceTabId <= 0)) {
     throw new Error("Open Export Studio from the extension popup on a Meshy viewer tab.");
   }
 
   initPreviewScene();
-  setStatus("Reading captured GLB from Meshy tab...");
+  setStatus(exportSessionId ? "Reading prepared export session..." : "Reading captured GLB from Meshy tab...");
   const loaded = await fetchCapturedModel();
   capturedModel = loaded.model;
   originalArrayBuffer = loaded.arrayBuffer;
@@ -120,15 +121,7 @@ async function fetchCapturedModel() {
   let model = null;
 
   while (true) {
-    const response = await sendRuntimeMessage({
-      type: "GET_CAPTURED_MODEL_CHUNK",
-      payload: {
-        sourceTabId,
-        modelId: requestedModelId,
-        offset,
-        length: CHUNK_SIZE
-      }
-    });
+    const response = await requestCapturedModelChunk(offset);
 
     if (!response?.ok) {
       throw new Error(response?.error || "Could not read captured model from the Meshy tab.");
@@ -164,6 +157,35 @@ async function fetchCapturedModel() {
     model,
     arrayBuffer: target.buffer
   };
+}
+
+async function requestCapturedModelChunk(offset) {
+  if (exportSessionId) {
+    const sessionResponse = await sendRuntimeMessage({
+      type: "GET_EXPORT_SESSION_CHUNK",
+      payload: {
+        sessionId: exportSessionId,
+        offset,
+        length: CHUNK_SIZE
+      }
+    });
+
+    if (sessionResponse?.ok || !Number.isInteger(sourceTabId) || sourceTabId <= 0) {
+      return sessionResponse;
+    }
+
+    console.warn("Prepared export session failed; falling back to Meshy tab bridge.", sessionResponse?.error);
+  }
+
+  return sendRuntimeMessage({
+    type: "GET_CAPTURED_MODEL_CHUNK",
+    payload: {
+      sourceTabId,
+      modelId: requestedModelId,
+      offset,
+      length: CHUNK_SIZE
+    }
+  });
 }
 
 function parseGltf(arrayBuffer) {

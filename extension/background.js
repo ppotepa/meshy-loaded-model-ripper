@@ -4,11 +4,16 @@ const TRACKED_TASKS_STORAGE_KEY = "trackedTasks";
 const TASK_POLL_ALARM_NAME = "pollTrackedMeshyTasks";
 const TASK_POLL_PERIOD_MINUTES = 1;
 const MAX_TRACKED_TASKS = 40;
+const EXPORT_SESSION_TTL_MS = 10 * 60 * 1000;
+const MAX_EXPORT_SESSIONS = 4;
+const EXPORT_SESSION_CHUNK_SIZE = 512 * 1024;
 const TASK_TABS = [
   "https://*.meshy.ai/*",
   "http://localhost/*",
   "http://127.0.0.1/*"
 ];
+
+const exportSessions = new Map();
 
 ensureTaskPollAlarm();
 
@@ -41,6 +46,10 @@ async function handleMessage(message, sender) {
       return trackTask(message.payload, sender);
     case "GET_TRACKED_TASKS":
       return getTrackedTasks();
+    case "PREPARE_EXPORT_SESSION":
+      return prepareExportSession(message.payload);
+    case "GET_EXPORT_SESSION_CHUNK":
+      return getExportSessionChunk(message.payload);
     case "GET_CAPTURED_MODEL_META":
       return relayCapturedModelRequest("GET_CAPTURED_MODEL_META", message.payload);
     case "GET_CAPTURED_MODEL_CHUNK":
@@ -166,6 +175,104 @@ async function relayCapturedModelRequest(type, payload = {}) {
   return sendTabMessage(sourceTabId, message);
 }
 
+async function prepareExportSession(payload = {}) {
+  cleanupExportSessions();
+
+  const sourceTabId = Number(payload.sourceTabId);
+  if (!Number.isInteger(sourceTabId) || sourceTabId <= 0) {
+    throw new Error("Missing source Meshy tab ID.");
+  }
+
+  const modelId = String(payload.modelId || "");
+  let offset = 0;
+  let target = null;
+  let model = null;
+
+  while (true) {
+    const response = await relayCapturedModelRequest("GET_CAPTURED_MODEL_CHUNK", {
+      sourceTabId,
+      modelId,
+      offset,
+      length: EXPORT_SESSION_CHUNK_SIZE
+    });
+
+    if (!response?.ok) {
+      throw new Error(response?.error || "Could not read the captured model from the Meshy tab.");
+    }
+
+    const chunk = response.chunk;
+    if (!chunk || !Number.isFinite(chunk.totalSize)) {
+      throw new Error("The Meshy tab returned an invalid model chunk.");
+    }
+
+    if (!target) {
+      target = new Uint8Array(chunk.totalSize);
+      model = chunk.model || null;
+    }
+
+    const bytes = base64ToBytes(chunk.base64 || "");
+    target.set(bytes, chunk.offset || 0);
+    offset = (chunk.offset || 0) + bytes.byteLength;
+
+    if (chunk.done) {
+      break;
+    }
+
+    if (bytes.byteLength === 0) {
+      throw new Error("The Meshy tab returned an empty model chunk.");
+    }
+  }
+
+  const sessionId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const session = {
+    id: sessionId,
+    model,
+    bytes: target,
+    size: target.byteLength,
+    sourceTabId,
+    modelId,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + EXPORT_SESSION_TTL_MS
+  };
+
+  exportSessions.set(sessionId, session);
+  trimExportSessions();
+
+  return {
+    session: serializeExportSession(session)
+  };
+}
+
+function getExportSessionChunk(payload = {}) {
+  cleanupExportSessions();
+
+  const sessionId = String(payload.sessionId || "");
+  const session = exportSessions.get(sessionId);
+  if (!session?.bytes) {
+    throw new Error("Export session expired. Reopen Export Studio from the Meshy popup.");
+  }
+
+  const totalSize = session.bytes.byteLength;
+  const offset = clampInteger(payload.offset, 0, totalSize, 0);
+  const length = clampInteger(payload.length, 1, 2 * 1024 * 1024, EXPORT_SESSION_CHUNK_SIZE);
+  const end = Math.min(totalSize, offset + length);
+  const bytes = session.bytes.subarray(offset, end);
+
+  session.expiresAt = Date.now() + EXPORT_SESSION_TTL_MS;
+
+  return {
+    chunk: {
+      session: serializeExportSession(session),
+      model: session.model,
+      offset,
+      byteLength: bytes.byteLength,
+      totalSize,
+      base64: bytesToBase64(bytes),
+      done: end >= totalSize
+    }
+  };
+}
+
 async function pollTrackedTasks() {
   const stored = await chrome.storage.local.get({ [TRACKED_TASKS_STORAGE_KEY]: [] });
   const trackedTasks = Array.isArray(stored[TRACKED_TASKS_STORAGE_KEY])
@@ -276,6 +383,57 @@ function isMissingReceivingEnd(message) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function serializeExportSession(session) {
+  return {
+    id: session.id,
+    model: session.model,
+    size: session.size,
+    sourceTabId: session.sourceTabId,
+    modelId: session.modelId,
+    createdAt: session.createdAt,
+    expiresAt: session.expiresAt
+  };
+}
+
+function cleanupExportSessions() {
+  const now = Date.now();
+  for (const [sessionId, session] of exportSessions.entries()) {
+    if (session.expiresAt <= now) {
+      exportSessions.delete(sessionId);
+    }
+  }
+}
+
+function trimExportSessions() {
+  cleanupExportSessions();
+  const sessions = [...exportSessions.values()].sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+  for (const session of sessions.slice(MAX_EXPORT_SESSIONS)) {
+    exportSessions.delete(session.id);
+  }
+}
+
+function base64ToBytes(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    const slice = bytes.subarray(offset, Math.min(bytes.length, offset + 0x8000));
+    let chunk = "";
+    for (let index = 0; index < slice.length; index += 1) {
+      chunk += String.fromCharCode(slice[index]);
+    }
+    binary += chunk;
+  }
+  return btoa(binary);
 }
 
 async function fetchApiJson(path, options = {}) {

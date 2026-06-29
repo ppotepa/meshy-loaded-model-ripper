@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Meshy Loaded Model Ripper",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "First-party helper that captures Meshy loader GLB output, previews it, and exports GLB or OBJ.",
   "permissions": ["storage", "activeTab", "scripting", "alarms"],
   "host_permissions": [

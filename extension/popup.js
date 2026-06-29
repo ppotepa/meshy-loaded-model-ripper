@@ -117,8 +117,32 @@ async function openExportStudio() {
     return;
   }
 
+  setBusy(true);
+  setStatus("Preparing Export Studio model transfer...");
+
+  let sessionId = "";
+  try {
+    const prepared = await chrome.runtime.sendMessage({
+      type: "PREPARE_EXPORT_SESSION",
+      payload: {
+        sourceTabId: activeTabId,
+        modelId: model.id || ""
+      }
+    });
+
+    if (!prepared?.ok || !prepared.session?.id) {
+      throw new Error(prepared?.error || "Could not prepare the captured model for Export Studio.");
+    }
+
+    sessionId = prepared.session.id;
+  } catch (error) {
+    setStatus(renderExportPreparationError(error), true);
+    setBusy(false);
+    return;
+  }
+
   const url = chrome.runtime.getURL(
-    `export.html?sourceTabId=${encodeURIComponent(activeTabId)}&modelId=${encodeURIComponent(model.id || "")}`
+    `export.html?sessionId=${encodeURIComponent(sessionId)}&sourceTabId=${encodeURIComponent(activeTabId)}&modelId=${encodeURIComponent(model.id || "")}`
   );
 
   try {
@@ -131,6 +155,9 @@ async function openExportStudio() {
     });
   } catch {
     await chrome.tabs.create({ url });
+  } finally {
+    setStatus("");
+    setBusy(false);
   }
 }
 
@@ -317,6 +344,14 @@ function setBusy(isBusy) {
 function setStatus(message, isError = false) {
   elements.status.textContent = message;
   elements.status.classList.toggle("is-error", Boolean(isError));
+}
+
+function renderExportPreparationError(error) {
+  const message = error?.message || String(error || "");
+  if (message.includes("No captured loaded model")) {
+    return "Captured model buffer is gone. Reload the Meshy model, wait for GLB ready, then open Export Studio again.";
+  }
+  return message || "Could not prepare Export Studio.";
 }
 
 async function copySourceLink() {
