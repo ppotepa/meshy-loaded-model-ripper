@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Meshy Loader Ripper</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="header">
+        <div>
+          <h1>Meshy Loader Ripper</h1>
+          <p id="page-status">Checking page...</p>
+        </div>
+        <button id="refresh" class="icon-button" title="Refresh" type="button">R</button>
+      </header>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>Loaded Model</h2>
+          <span id="reader-state">Idle</span>
+        </div>
+        <div id="reader-model" class="meta">No loaded model detected.</div>
+
+        <label for="source-url">model.meshy source</label>
+        <div class="inline-field">
+          <input id="source-url" readonly spellcheck="false" placeholder="Waiting for encrypted model URL">
+          <button id="copy-source" class="secondary copy-button" type="button" disabled>Copy</button>
+        </div>
+
+        <div class="stats">
+          <div>
+            <span>Decrypted</span>
+            <strong id="loaded-size">-</strong>
+          </div>
+          <div>
+            <span>Worker</span>
+            <strong id="worker-state">-</strong>
+          </div>
+        </div>
+
+        <div id="scene-stats" class="meta">Scene not detected.</div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>Task</h2>
+          <span id="task-state">Unknown</span>
+        </div>
+        <div id="task-meta" class="meta">No task detected yet.</div>
+      </section>
+
+      <button id="save-loaded" class="primary" type="button" disabled>Save Loaded GLB</button>
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

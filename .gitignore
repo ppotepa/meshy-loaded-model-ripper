@@ -1,0 +1,17 @@
+# Build outputs
+dist/
+*.zip
+
+# Captured website/source bundles and local analysis artifacts
+source/
+.agents/
+www.meshy.ai (1).zip
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs
+*.log
