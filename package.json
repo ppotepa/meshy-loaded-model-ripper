@@ -1,6 +1,6 @@
 {
   "name": "meshy-loaded-model-ripper",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "description": "Chrome/Edge MV3 helper that captures Meshy loader GLB output, previews it, and exports validated optimized GLB or OBJ.",
   "private": true,
   "scripts": {

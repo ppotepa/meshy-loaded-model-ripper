@@ -647,7 +647,10 @@ function validateOptimizedModel(original, optimized, originalScene, optimizedSce
       warnings.push("Triangle count did not decrease.");
     }
     if (optimized.totalBytes > original.totalBytes) {
-      warnings.push(`Final GLB is ${formatBytes(optimized.totalBytes - original.totalBytes)} larger because packaging/textures outweighed geometry savings.`);
+      warnings.push(`Final GLB is ${formatBytes(optimized.totalBytes - original.totalBytes)} larger because remaining package payload outweighed geometry savings.`);
+    }
+    if (optimized.unusedAccessorBytes > 0) {
+      warnings.push(`Optimized GLB still contains ${formatBytes(optimized.unusedAccessorBytes)} of unused geometry accessors.`);
     }
     if (optimizationWorkerStats?.report?.textureMode === "strip") {
       warnings.push("Optimized output is geometry-only; material texture images were removed.");
@@ -795,10 +798,14 @@ function computeSceneStats(root, totalBytes = 0, workerStats = null) {
   stats.textureCount = textures.size;
 
   if (workerStats) {
-    stats.geometryBytes = workerStats.geometryBytes || stats.geometryBytes;
-    stats.textureBytes = workerStats.textureBytes || Math.max(0, totalBytes - stats.geometryBytes);
+    stats.geometryBytes = workerStats.geometryBytes ?? stats.geometryBytes;
+    stats.textureBytes = workerStats.textureBytes ?? Math.max(0, totalBytes - stats.geometryBytes);
+    stats.unusedAccessorBytes = workerStats.unusedAccessorBytes ?? 0;
+    stats.unusedAccessors = workerStats.unusedAccessors ?? 0;
   } else {
     stats.textureBytes = Math.max(0, totalBytes - stats.geometryBytes);
+    stats.unusedAccessorBytes = 0;
+    stats.unusedAccessors = 0;
   }
 
   return stats;

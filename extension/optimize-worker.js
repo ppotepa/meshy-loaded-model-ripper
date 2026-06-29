@@ -11410,7 +11410,11 @@
     return document.createAccessor(accessor.getName()).setArray(targetArray).setType(accessor.getType()).setNormalized(accessor.getNormalized());
   }
   function disposeIfExclusive(property) {
-    if (property && property.listParents().length === 0) {
+    if (!property) {
+      return;
+    }
+    const activeParents = property.listParents().filter((parent) => parent.propertyType !== "Root");
+    if (activeParents.length === 0) {
       property.dispose();
     }
   }
@@ -11429,6 +11433,7 @@
       animations: root.listAnimations().length,
       skins: root.listSkins().length
     };
+    const usedAccessors = /* @__PURE__ */ new Set();
     for (const mesh of root.listMeshes()) {
       for (const primitive of mesh.listPrimitives()) {
         stats.primitives += 1;
@@ -11439,12 +11444,31 @@
         stats.vertices += vertexCount;
         stats.triangles += Math.floor((indexCount || vertexCount) / 3);
         if (indices) {
+          usedAccessors.add(indices);
           stats.geometryBytes += getAccessorByteLength(indices);
         }
         for (const semantic of primitive.listSemantics()) {
           const accessor = primitive.getAttribute(semantic);
+          usedAccessors.add(accessor);
           stats.geometryBytes += getAccessorByteLength(accessor);
         }
+        for (const target of primitive.listTargets()) {
+          for (const accessor of target.listAttributes()) {
+            usedAccessors.add(accessor);
+            stats.geometryBytes += getAccessorByteLength(accessor);
+          }
+        }
+      }
+    }
+    stats.accessorBytes = 0;
+    stats.unusedAccessorBytes = 0;
+    stats.unusedAccessors = 0;
+    for (const accessor of root.listAccessors()) {
+      const byteLength = getAccessorByteLength(accessor);
+      stats.accessorBytes += byteLength;
+      if (!usedAccessors.has(accessor)) {
+        stats.unusedAccessorBytes += byteLength;
+        stats.unusedAccessors += 1;
       }
     }
     for (const texture of root.listTextures()) {
