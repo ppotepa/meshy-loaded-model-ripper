@@ -1,13 +1,18 @@
 import * as THREE from "./vendor/three/three.module.js";
 import { GLTFLoader } from "./vendor/three/GLTFLoader.js";
-import { GLTFExporter } from "./vendor/three/GLTFExporter.js";
 import { OBJExporter } from "./vendor/three/OBJExporter.js";
 import { OrbitControls } from "./vendor/three/OrbitControls.js";
 
 window.__MESHY_EXPORT_STUDIO_STARTED__ = true;
 
 const CHUNK_SIZE = 512 * 1024;
-const MIN_OPTIMIZE_TRIANGLES = 24;
+const PROFILE_DEFAULTS = {
+  cleanup: { ratio: 100, error: 0, lockBorder: true, quantize: false },
+  safe: { ratio: 82, error: 10, lockBorder: true, quantize: true },
+  balanced: { ratio: 58, error: 30, lockBorder: true, quantize: true },
+  aggressive: { ratio: 32, error: 100, lockBorder: false, quantize: true }
+};
+
 const params = new URLSearchParams(window.location.search);
 const exportSessionId = params.get("sessionId") || "";
 const sourceTabId = Number(params.get("sourceTabId") || 0);
@@ -16,16 +21,23 @@ const requestedModelId = params.get("modelId") || "";
 const elements = {};
 let capturedModel = null;
 let originalArrayBuffer = null;
-let sourceRoot = null;
-let previewRoot = null;
-let sourceStats = null;
+let optimizedArrayBuffer = null;
+let originalRoot = null;
+let optimizedRoot = null;
+let activeRoot = null;
+let originalStats = null;
+let optimizedStats = null;
+let optimizationWorkerStats = null;
+let validationResult = null;
 let renderer = null;
 let scene = null;
 let camera = null;
 let controls = null;
 let animationFrame = 0;
 let wireframeEnabled = false;
+let activeMode = "original";
 let isBusy = false;
+let progressTimer = 0;
 
 cacheElements();
 bindEvents();
@@ -38,20 +50,39 @@ function cacheElements() {
   elements.modelTitle = document.getElementById("model-title");
   elements.modelSubtitle = document.getElementById("model-subtitle");
   elements.canvas = document.getElementById("preview-canvas");
+  elements.viewOriginal = document.getElementById("view-original");
+  elements.viewOptimized = document.getElementById("view-optimized");
   elements.resetCamera = document.getElementById("reset-camera");
   elements.toggleWireframe = document.getElementById("toggle-wireframe");
   elements.format = document.getElementById("format");
   elements.formatNote = document.getElementById("format-note");
-  elements.optimize = document.getElementById("optimize");
+  elements.profile = document.getElementById("profile");
   elements.ratio = document.getElementById("ratio");
   elements.ratioValue = document.getElementById("ratio-value");
-  elements.estimateTris = document.getElementById("estimate-tris");
-  elements.estimateSize = document.getElementById("estimate-size");
-  elements.inputSize = document.getElementById("input-size");
-  elements.outputSize = document.getElementById("output-size");
+  elements.error = document.getElementById("error");
+  elements.errorValue = document.getElementById("error-value");
+  elements.lockBorder = document.getElementById("lock-border");
+  elements.quantize = document.getElementById("quantize");
+  elements.generateOptimized = document.getElementById("generate-optimized");
+  elements.validation = document.getElementById("validation");
+  elements.originalTotal = document.getElementById("original-total");
+  elements.optimizedTotal = document.getElementById("optimized-total");
+  elements.originalGeometry = document.getElementById("original-geometry");
+  elements.optimizedGeometry = document.getElementById("optimized-geometry");
+  elements.originalTextures = document.getElementById("original-textures");
+  elements.optimizedTextures = document.getElementById("optimized-textures");
+  elements.originalTris = document.getElementById("original-tris");
+  elements.optimizedTris = document.getElementById("optimized-tris");
+  elements.originalVerts = document.getElementById("original-verts");
+  elements.optimizedVerts = document.getElementById("optimized-verts");
   elements.sourceUrl = document.getElementById("source-url");
-  elements.save = document.getElementById("save");
+  elements.saveOriginal = document.getElementById("save-original");
+  elements.saveOptimized = document.getElementById("save-optimized");
   elements.progressBar = document.getElementById("progress-bar");
+  elements.busyModal = document.getElementById("busy-modal");
+  elements.busyTitle = document.getElementById("busy-title");
+  elements.busyMessage = document.getElementById("busy-message");
+  elements.busyBarFill = document.getElementById("busy-bar-fill");
   elements.statusText = document.getElementById("status-text");
   elements.statMeshes = document.getElementById("stat-meshes");
   elements.statTris = document.getElementById("stat-tris");
@@ -59,19 +90,28 @@ function cacheElements() {
 }
 
 function bindEvents() {
-  elements.format.addEventListener("change", () => {
-    renderFormatNote();
-    renderEstimate();
+  elements.format.addEventListener("change", renderFormatNote);
+  elements.profile.addEventListener("change", () => applyProfileDefaults(elements.profile.value));
+  elements.ratio.addEventListener("input", renderOptimizationControls);
+  elements.ratio.addEventListener("change", maybeGenerateLodPreview);
+  elements.error.addEventListener("input", renderOptimizationControls);
+  elements.error.addEventListener("change", maybeGenerateLodPreview);
+  elements.lockBorder.addEventListener("change", () => {
+    markOptimizedStale();
+    maybeGenerateLodPreview();
   });
-  elements.optimize.addEventListener("change", () => {
-    elements.ratio.disabled = !elements.optimize.checked || isBusy;
-    renderEstimate();
+  elements.quantize.addEventListener("change", () => {
+    markOptimizedStale();
+    maybeGenerateLodPreview();
   });
-  elements.ratio.addEventListener("input", renderEstimate);
-  elements.save.addEventListener("click", saveModel);
+  elements.generateOptimized.addEventListener("click", generateOptimizedModel);
+  elements.saveOriginal.addEventListener("click", () => saveModel("original"));
+  elements.saveOptimized.addEventListener("click", () => saveModel("optimized"));
+  elements.viewOriginal.addEventListener("click", () => setPreviewMode("original"));
+  elements.viewOptimized.addEventListener("click", () => setPreviewMode("optimized"));
   elements.resetCamera.addEventListener("click", () => {
-    if (previewRoot) {
-      fitCameraToObject(previewRoot);
+    if (activeRoot) {
+      fitCameraToObject(activeRoot);
     }
   });
   elements.toggleWireframe.addEventListener("click", () => {
@@ -88,31 +128,29 @@ async function init() {
   }
 
   initPreviewScene();
+  applyProfileDefaults("balanced", { resetOptimized: false });
   setStatus(exportSessionId ? "Reading prepared export session..." : "Reading captured GLB from Meshy tab...");
+
   const loaded = await fetchCapturedModel();
   capturedModel = loaded.model;
   originalArrayBuffer = loaded.arrayBuffer;
-
   renderCapturedModel();
-  setStatus("Parsing GLB...");
-  setProgress(75);
 
-  const gltf = await parseGltf(originalArrayBuffer);
-  sourceRoot = gltf.scene || gltf.scenes?.[0];
-  if (!sourceRoot) {
+  setStatus("Parsing original GLB...");
+  setProgress(75);
+  const original = await parseGltf(originalArrayBuffer);
+  originalRoot = original.scene || original.scenes?.[0];
+  if (!originalRoot) {
     throw new Error("The captured GLB does not contain a scene.");
   }
 
-  sourceStats = computeSceneStats(sourceRoot);
-  previewRoot = sourceRoot.clone(true);
-  scene.add(previewRoot);
-  renderStats();
-  fitCameraToObject(previewRoot);
+  originalStats = computeSceneStats(originalRoot, originalArrayBuffer.byteLength);
+  setPreviewMode("original", { fit: true });
+  renderAllStats();
   setControlsEnabled(true);
   setProgress(100);
   window.__MESHY_EXPORT_STUDIO_READY__ = true;
-  setStatus("Ready.");
-  renderEstimate();
+  setStatus("Ready. Move the target slider to generate an LOD preview, or click Generate Optimized.");
 }
 
 async function fetchCapturedModel() {
@@ -122,7 +160,6 @@ async function fetchCapturedModel() {
 
   while (true) {
     const response = await requestCapturedModelChunk(offset);
-
     if (!response?.ok) {
       throw new Error(response?.error || "Could not read captured model from the Meshy tab.");
     }
@@ -188,6 +225,152 @@ async function requestCapturedModelChunk(offset) {
   });
 }
 
+async function generateOptimizedModel() {
+  if (!originalArrayBuffer || isBusy) {
+    return;
+  }
+
+  setBusy(true);
+  setOptimizedState(null);
+  renderAllStats();
+  setValidation("Generating optimized GLB...", "neutral");
+  showBusyModal("Generating LOD Preview", "Running glTF Transform + meshoptimizer...");
+  startProgressPulse(18, 88);
+  setStatus("Running glTF Transform + meshoptimizer in worker...");
+
+  try {
+    const options = getOptimizationOptions();
+    const result = await runOptimizationWorker(originalArrayBuffer, options);
+    stopProgressPulse();
+
+    if (!result.ok || !(result.arrayBuffer instanceof ArrayBuffer) || result.arrayBuffer.byteLength <= 0) {
+      throw new Error(result.error || "Optimizer did not return a GLB.");
+    }
+
+    setProgress(90);
+    setBusyModalProgress(90, "Validating optimized preview...");
+    setStatus("Validating optimized GLB...");
+    optimizedArrayBuffer = result.arrayBuffer;
+    optimizationWorkerStats = {
+      before: result.before || null,
+      after: result.after || null,
+      options: result.options || options
+    };
+
+    const optimized = await parseGltf(optimizedArrayBuffer);
+    optimizedRoot = optimized.scene || optimized.scenes?.[0];
+    if (!optimizedRoot) {
+      throw new Error("Optimized GLB does not contain a scene.");
+    }
+
+    optimizedStats = computeSceneStats(optimizedRoot, optimizedArrayBuffer.byteLength, optimizationWorkerStats.after);
+    validationResult = validateOptimizedModel(originalStats, optimizedStats, originalRoot, optimizedRoot);
+    if (!validationResult.ok) {
+      setOptimizedState(null);
+      throw new Error(validationResult.errors.join(" "));
+    }
+
+    elements.viewOptimized.disabled = false;
+    renderAllStats();
+    setPreviewMode("optimized", { fit: true });
+    setValidation(renderValidationMessage(validationResult), validationResult.warnings.length ? "warning" : "valid");
+    setProgress(100);
+    hideBusyModal();
+    setStatus(`Optimized GLB ready: ${formatBytes(originalArrayBuffer.byteLength)} -> ${formatBytes(optimizedArrayBuffer.byteLength)}.`);
+  } catch (error) {
+    stopProgressPulse();
+    hideBusyModal();
+    setProgress(0);
+    setValidation(error.message || String(error), "error");
+    setStatus(error.message || String(error), true);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function maybeGenerateLodPreview() {
+  if (!originalArrayBuffer || isBusy || elements.profile.value === "cleanup") {
+    return;
+  }
+  await generateOptimizedModel();
+}
+
+function runOptimizationWorker(arrayBuffer, options) {
+  return new Promise((resolve) => {
+    const worker = new Worker("optimize-worker.js");
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const timeout = window.setTimeout(() => {
+      worker.terminate();
+      resolve({ ok: false, error: "Optimization timed out." });
+    }, 5 * 60 * 1000);
+
+    worker.addEventListener("message", (event) => {
+      if (event.data?.id && event.data.id !== id) {
+        return;
+      }
+      window.clearTimeout(timeout);
+      worker.terminate();
+      resolve(event.data || { ok: false, error: "Optimizer returned no data." });
+    });
+
+    worker.addEventListener("error", (event) => {
+      window.clearTimeout(timeout);
+      worker.terminate();
+      resolve({ ok: false, error: event.message || "Optimization worker failed." });
+    });
+
+    const workerBuffer = arrayBuffer.slice(0);
+    worker.postMessage({
+      id,
+      type: "OPTIMIZE_GLB",
+      arrayBuffer: workerBuffer,
+      options
+    }, [workerBuffer]);
+  });
+}
+
+async function saveModel(mode) {
+  if (isBusy) {
+    return;
+  }
+
+  const format = elements.format.value === "obj" ? "obj" : "glb";
+  const isOptimized = mode === "optimized";
+  const root = isOptimized ? optimizedRoot : originalRoot;
+  const buffer = isOptimized ? optimizedArrayBuffer : originalArrayBuffer;
+
+  if (!root || !buffer) {
+    setStatus(isOptimized ? "Generate and validate an optimized model first." : "Original model is not loaded.", true);
+    return;
+  }
+
+  if (isOptimized && !validationResult?.ok) {
+    setStatus("Optimized model is not validated yet.", true);
+    return;
+  }
+
+  setBusy(true);
+  setProgress(20);
+  showBusyModal("Saving Model", `Saving ${isOptimized ? "optimized" : "original"} ${format.toUpperCase()}...`);
+  setStatus(`Saving ${isOptimized ? "optimized" : "original"} ${format.toUpperCase()}...`);
+
+  try {
+    const filename = buildOutputFilename(capturedModel?.filename, format, isOptimized);
+    const blob = format === "glb"
+      ? new Blob([buffer], { type: "model/gltf-binary" })
+      : exportObj(root);
+    downloadBlob(blob, filename);
+    setProgress(100);
+    setBusyModalProgress(100, "Download started.");
+    setStatus(`Saved ${filename} (${formatBytes(blob.size)}).`);
+  } catch (error) {
+    setStatus(error.message || String(error), true);
+  } finally {
+    window.setTimeout(hideBusyModal, 250);
+    setBusy(false);
+  }
+}
+
 function parseGltf(arrayBuffer) {
   const loader = new GLTFLoader();
   return new Promise((resolve, reject) => {
@@ -246,6 +429,29 @@ function resizeRenderer() {
   camera.updateProjectionMatrix();
 }
 
+function setPreviewMode(mode, options = {}) {
+  const nextRoot = mode === "optimized" ? optimizedRoot : originalRoot;
+  if (!nextRoot) {
+    return;
+  }
+
+  if (activeRoot) {
+    scene.remove(activeRoot);
+  }
+
+  activeMode = mode;
+  activeRoot = nextRoot.clone(true);
+  scene.add(activeRoot);
+  setPreviewWireframe(wireframeEnabled);
+  elements.viewOriginal.classList.toggle("is-active", activeMode === "original");
+  elements.viewOptimized.classList.toggle("is-active", activeMode === "optimized");
+  renderOverlayStats(mode === "optimized" ? optimizedStats : originalStats);
+
+  if (options.fit !== false) {
+    fitCameraToObject(activeRoot);
+  }
+}
+
 function fitCameraToObject(root) {
   if (!root || !camera || !controls) {
     return;
@@ -276,378 +482,6 @@ function fitCameraToObject(root) {
   controls.update();
 }
 
-async function saveModel() {
-  if (!sourceRoot || !sourceStats || isBusy) {
-    return;
-  }
-
-  const format = elements.format.value === "obj" ? "obj" : "glb";
-  const optimize = elements.optimize.checked;
-  const ratio = optimize ? Number(elements.ratio.value) / 100 : 1;
-  const filename = buildOutputFilename(capturedModel?.filename, format, optimize ? elements.ratio.value : "");
-
-  setBusy(true);
-  setProgress(0);
-  setStatus("Preparing export scene...");
-
-  try {
-    const exportRoot = cloneForExport(sourceRoot);
-    await nextFrame();
-
-    let optimizeResult = createEmptyOptimizeResult();
-    if (optimize && ratio < 0.995) {
-      setStatus(`Optimizing mesh to ${Math.round(ratio * 100)}% target detail...`);
-      setProgress(20);
-      await nextFrame();
-      optimizeResult = await optimizeSceneForExport(exportRoot, ratio, (progress) => {
-        setProgress(20 + Math.round(progress * 35));
-        setStatus(`Optimizing mesh: ${progress < 1 ? Math.round(progress * 100) : 100}%`);
-      });
-    }
-
-    setProgress(65);
-    setStatus(`Exporting ${format.toUpperCase()}...`);
-    await nextFrame();
-
-    const blob = format === "obj"
-      ? exportObj(exportRoot)
-      : await exportGlb(exportRoot);
-
-    elements.outputSize.textContent = formatBytes(blob.size);
-    downloadBlob(blob, filename);
-    setProgress(100);
-
-    const optimizedText = optimize
-      ? renderOptimizeSummary(optimizeResult)
-      : "";
-    setStatus(`Saved ${filename} (${formatBytes(blob.size)}).${optimizedText}`);
-  } catch (error) {
-    setStatus(error.message || String(error), true);
-  } finally {
-    setBusy(false);
-  }
-}
-
-function cloneForExport(root) {
-  const clone = root.clone(true);
-  clone.traverse((object) => {
-    if (!object?.isMesh) {
-      return;
-    }
-
-    if (object.geometry?.clone) {
-      object.geometry = object.geometry.clone();
-    }
-
-    if (Array.isArray(object.material)) {
-      object.material = object.material.map(cloneMaterialForExport);
-    } else {
-      object.material = cloneMaterialForExport(object.material);
-    }
-  });
-  return clone;
-}
-
-function cloneMaterialForExport(material) {
-  if (!material?.clone) {
-    return material;
-  }
-
-  const clone = material.clone();
-  if ("wireframe" in clone) {
-    clone.wireframe = false;
-  }
-  return clone;
-}
-
-async function optimizeSceneForExport(root, ratio, onProgress = () => {}) {
-  const meshes = [];
-  root.traverse((object) => {
-    if (object?.isMesh && object.geometry) {
-      meshes.push(object);
-    }
-  });
-
-  const result = createEmptyOptimizeResult();
-  root.updateMatrixWorld(true);
-
-  for (let index = 0; index < meshes.length; index += 1) {
-    const object = meshes[index];
-    if (!object?.isMesh || !object.geometry) {
-      continue;
-    }
-
-    const before = getGeometryStats(object.geometry);
-    result.inputTriangles += before.triangleCount;
-    result.inputVertices += before.vertexCount;
-    result.inputGeometryBytes += before.byteLength;
-
-    if (object.isSkinnedMesh || object.isInstancedMesh || hasMorphTargets(object.geometry)) {
-      result.skipped += 1;
-      result.outputTriangles += before.triangleCount;
-      result.outputVertices += before.vertexCount;
-      result.outputGeometryBytes += before.byteLength;
-      continue;
-    }
-
-    if (before.triangleCount < MIN_OPTIMIZE_TRIANGLES || ratio >= 0.995) {
-      result.unchanged += 1;
-      result.outputTriangles += before.triangleCount;
-      result.outputVertices += before.vertexCount;
-      result.outputGeometryBytes += before.byteLength;
-      continue;
-    }
-
-    const optimizedGeometry = createDecimatedGeometry(object.geometry, ratio);
-    const after = getGeometryStats(optimizedGeometry);
-
-    if (!after.vertexCount || !after.triangleCount || after.triangleCount >= before.triangleCount) {
-      optimizedGeometry.dispose?.();
-      result.unchanged += 1;
-      result.outputTriangles += before.triangleCount;
-      result.outputVertices += before.vertexCount;
-      result.outputGeometryBytes += before.byteLength;
-      continue;
-    }
-
-    object.geometry = optimizedGeometry;
-    result.processed += 1;
-    result.outputTriangles += after.triangleCount;
-    result.outputVertices += after.vertexCount;
-    result.outputGeometryBytes += after.byteLength;
-
-    if (index % 2 === 0) {
-      onProgress((index + 1) / Math.max(1, meshes.length));
-      await nextFrame();
-    }
-  }
-
-  onProgress(1);
-  return result;
-}
-
-function createDecimatedGeometry(geometry, ratio) {
-  const sourcePosition = geometry.getAttribute("position");
-  if (!sourcePosition) {
-    return geometry.clone();
-  }
-
-  const groups = getGeometryGroups(geometry);
-  const vertexMap = new Map();
-  const nextAttributeValues = new Map();
-  const nextIndices = [];
-  const nextGroups = [];
-
-  for (const [name] of Object.entries(geometry.attributes)) {
-    nextAttributeValues.set(name, []);
-  }
-
-  for (const group of groups) {
-    const sourceTriangleCount = Math.floor(group.count / 3);
-    if (sourceTriangleCount <= 0) {
-      continue;
-    }
-
-    const targetTriangleCount = Math.max(1, Math.min(sourceTriangleCount, Math.round(sourceTriangleCount * ratio)));
-    const groupStart = nextIndices.length;
-
-    for (let targetTriangle = 0; targetTriangle < targetTriangleCount; targetTriangle += 1) {
-      const sourceTriangle = Math.min(
-        sourceTriangleCount - 1,
-        Math.floor((targetTriangle * sourceTriangleCount) / targetTriangleCount)
-      );
-      const triangleStart = group.start + sourceTriangle * 3;
-
-      for (let corner = 0; corner < 3; corner += 1) {
-        const sourceVertex = getSourceVertexIndex(geometry, triangleStart + corner);
-        let nextVertex = vertexMap.get(sourceVertex);
-
-        if (nextVertex === undefined) {
-          nextVertex = vertexMap.size;
-          vertexMap.set(sourceVertex, nextVertex);
-          copySourceVertexAttributes(geometry, sourceVertex, nextAttributeValues);
-        }
-
-        nextIndices.push(nextVertex);
-      }
-    }
-
-    const groupCount = nextIndices.length - groupStart;
-    if (groupCount > 0) {
-      nextGroups.push({
-        start: groupStart,
-        count: groupCount,
-        materialIndex: group.materialIndex || 0
-      });
-    }
-  }
-
-  const optimized = new THREE.BufferGeometry();
-  for (const [name, values] of nextAttributeValues.entries()) {
-    const attribute = geometry.getAttribute(name);
-    if (!attribute || !values.length) {
-      continue;
-    }
-
-    const ArrayType = attribute.array?.constructor || Float32Array;
-    optimized.setAttribute(
-      name,
-      new THREE.BufferAttribute(new ArrayType(values), attribute.itemSize, attribute.normalized === true)
-    );
-  }
-
-  const indexArray = vertexMap.size > 65535
-    ? new Uint32Array(nextIndices)
-    : new Uint16Array(nextIndices);
-  optimized.setIndex(new THREE.BufferAttribute(indexArray, 1));
-
-  for (const group of nextGroups) {
-    optimized.addGroup(group.start, group.count, group.materialIndex);
-  }
-
-  if (!optimized.getAttribute("normal")) {
-    optimized.computeVertexNormals();
-  }
-
-  optimized.computeBoundingBox();
-  optimized.computeBoundingSphere();
-  return optimized;
-}
-
-function getGeometryGroups(geometry) {
-  const drawCount = getGeometryDrawCount(geometry);
-  if (Array.isArray(geometry.groups) && geometry.groups.length) {
-    return geometry.groups
-      .map((group) => {
-        const start = clampInteger(group.start, 0, drawCount, 0);
-        const count = clampInteger(group.count, 0, drawCount - start, drawCount - start);
-        return {
-          start,
-          count,
-          materialIndex: group.materialIndex || 0
-        };
-      })
-      .filter((group) => group.count >= 3);
-  }
-
-  return [{
-    start: 0,
-    count: drawCount,
-    materialIndex: 0
-  }];
-}
-
-function getGeometryDrawCount(geometry) {
-  if (geometry.index) {
-    return geometry.index.count;
-  }
-  return geometry.getAttribute("position")?.count || 0;
-}
-
-function getSourceVertexIndex(geometry, drawIndex) {
-  return geometry.index ? geometry.index.getX(drawIndex) : drawIndex;
-}
-
-function copySourceVertexAttributes(geometry, sourceVertex, nextAttributeValues) {
-  for (const [name, values] of nextAttributeValues.entries()) {
-    const attribute = geometry.getAttribute(name);
-    if (!attribute) {
-      continue;
-    }
-
-    for (let component = 0; component < attribute.itemSize; component += 1) {
-      values.push(getAttributeComponent(attribute, sourceVertex, component));
-    }
-  }
-}
-
-function getAttributeComponent(attribute, vertexIndex, component) {
-  switch (component) {
-    case 0:
-      return attribute.getX(vertexIndex);
-    case 1:
-      return attribute.getY(vertexIndex);
-    case 2:
-      return attribute.getZ(vertexIndex);
-    case 3:
-      return attribute.getW(vertexIndex);
-    default:
-      return 0;
-  }
-}
-
-function getGeometryStats(geometry) {
-  const position = geometry.getAttribute("position");
-  let byteLength = geometry.index?.array?.byteLength || 0;
-
-  for (const attribute of Object.values(geometry.attributes || {})) {
-    byteLength += attribute?.array?.byteLength || 0;
-  }
-
-  return {
-    vertexCount: position?.count || 0,
-    triangleCount: Math.floor(getGeometryDrawCount(geometry) / 3),
-    byteLength
-  };
-}
-
-function createEmptyOptimizeResult() {
-  return {
-    processed: 0,
-    skipped: 0,
-    unchanged: 0,
-    inputTriangles: 0,
-    outputTriangles: 0,
-    inputVertices: 0,
-    outputVertices: 0,
-    inputGeometryBytes: 0,
-    outputGeometryBytes: 0
-  };
-}
-
-function renderOptimizeSummary(result) {
-  if (!result.processed) {
-    const skippedText = result.skipped ? ` Skipped ${result.skipped} protected mesh${result.skipped === 1 ? "" : "es"}.` : "";
-    return ` Optimization did not change export geometry.${skippedText}`;
-  }
-
-  const triangleText = `${formatNumber(result.inputTriangles)} -> ${formatNumber(result.outputTriangles)} tris`;
-  const byteText = `${formatBytes(result.inputGeometryBytes)} -> ${formatBytes(result.outputGeometryBytes)} geometry`;
-  const skippedText = result.skipped ? ` Skipped ${result.skipped} protected mesh${result.skipped === 1 ? "" : "es"}.` : "";
-  return ` Optimized ${result.processed} mesh${result.processed === 1 ? "" : "es"} (${triangleText}, ${byteText}).${skippedText}`;
-}
-
-function clampInteger(value, min, max, fallback) {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) {
-    return fallback;
-  }
-  return Math.min(max, Math.max(min, parsed));
-}
-
-function exportGlb(root) {
-  const exporter = new GLTFExporter();
-  return new Promise((resolve, reject) => {
-    exporter.parse(
-      root,
-      (result) => {
-        if (result instanceof ArrayBuffer) {
-          resolve(new Blob([result], { type: "model/gltf-binary" }));
-          return;
-        }
-
-        resolve(new Blob([JSON.stringify(result, null, 2)], { type: "model/gltf+json" }));
-      },
-      reject,
-      {
-        binary: true,
-        onlyVisible: true,
-        includeCustomExtensions: false
-      }
-    );
-  });
-}
-
 function exportObj(root) {
   const exporter = new OBJExporter();
   const text = exporter.parse(root);
@@ -659,81 +493,36 @@ function renderCapturedModel() {
   elements.modelTitle.textContent = taskName;
   elements.modelSubtitle.textContent = [
     capturedModel?.source ? `Captured from ${capturedModel.source}` : "Captured loader output",
-    capturedModel?.size ? formatBytes(capturedModel.size) : "",
+    originalArrayBuffer ? formatBytes(originalArrayBuffer.byteLength) : "",
     capturedModel?.taskId || ""
   ].filter(Boolean).join(" - ");
-  elements.inputSize.textContent = formatBytes(getInputByteSize());
-  elements.outputSize.textContent = "Not saved";
   elements.sourceUrl.value = capturedModel?.encryptedUrl || capturedModel?.sourceUrl || "";
 }
 
 function renderDownloadShell(model, totalSize) {
   elements.modelTitle.textContent = model?.taskName || model?.filename || "Captured Meshy model";
   elements.modelSubtitle.textContent = `Reading ${formatBytes(totalSize)} from the Meshy tab`;
-  elements.inputSize.textContent = formatBytes(totalSize);
-  elements.outputSize.textContent = "Not saved";
   elements.sourceUrl.value = model?.encryptedUrl || model?.sourceUrl || "";
 }
 
-function renderStats() {
-  if (!sourceStats) {
-    return;
-  }
-
-  elements.statMeshes.textContent = formatNumber(sourceStats.meshCount);
-  elements.statTris.textContent = formatNumber(sourceStats.triangleCount);
-  elements.statVerts.textContent = formatNumber(sourceStats.vertexCount);
+function renderOverlayStats(stats) {
+  elements.statMeshes.textContent = stats ? formatNumber(stats.meshCount) : "-";
+  elements.statTris.textContent = stats ? formatNumber(stats.triangleCount) : "-";
+  elements.statVerts.textContent = stats ? formatNumber(stats.vertexCount) : "-";
 }
 
-function renderEstimate() {
-  const ratioPercent = Number(elements.ratio.value || 100);
-  const ratio = ratioPercent / 100;
-  const optimize = elements.optimize.checked;
-  elements.ratioValue.textContent = `${ratioPercent}%`;
-  elements.ratio.disabled = !optimize || isBusy;
-
-  renderFormatNote();
-
-  if (!sourceStats) {
-    elements.estimateTris.textContent = "-";
-    elements.estimateSize.textContent = "-";
-    return;
-  }
-
-  const targetTris = optimize
-    ? Math.max(1, Math.round(sourceStats.triangleCount * ratio))
-    : sourceStats.triangleCount;
-  const estimatedSize = estimateOutputByteSize(elements.format.value, optimize, ratio, targetTris);
-
-  elements.estimateTris.textContent = formatNumber(targetTris);
-  elements.estimateSize.textContent = `~${formatBytes(estimatedSize)}`;
+function renderAllStats() {
+  renderStatsColumn("original", originalStats);
+  renderStatsColumn("optimized", optimizedStats);
+  renderOverlayStats(activeMode === "optimized" ? optimizedStats : originalStats);
 }
 
-function estimateOutputByteSize(format, optimize, ratio, targetTriangles) {
-  const inputSize = getInputByteSize();
-  if (!sourceStats) {
-    return inputSize;
-  }
-
-  if (format === "obj") {
-    const targetVertices = optimize
-      ? Math.max(3, Math.round(sourceStats.vertexCount * ratio))
-      : sourceStats.vertexCount;
-    return Math.max(1024, Math.round(targetVertices * 62 + targetTriangles * 42));
-  }
-
-  if (!optimize) {
-    return inputSize;
-  }
-
-  const geometryBytes = sourceStats.geometryBytes || 0;
-  const nonGeometryBytes = Math.max(0, inputSize - geometryBytes);
-  const optimizedGeometryBytes = Math.round(geometryBytes * ratio);
-  return Math.max(1024, nonGeometryBytes + optimizedGeometryBytes + 4096);
-}
-
-function getInputByteSize() {
-  return capturedModel?.size || originalArrayBuffer?.byteLength || 0;
+function renderStatsColumn(prefix, stats) {
+  elements[`${prefix}Total`].textContent = stats ? formatBytes(stats.totalBytes) : "-";
+  elements[`${prefix}Geometry`].textContent = stats ? formatBytes(stats.geometryBytes) : "-";
+  elements[`${prefix}Textures`].textContent = stats ? formatBytes(stats.textureBytes) : "-";
+  elements[`${prefix}Tris`].textContent = stats ? formatNumber(stats.triangleCount) : "-";
+  elements[`${prefix}Verts`].textContent = stats ? formatNumber(stats.vertexCount) : "-";
 }
 
 function renderFormatNote() {
@@ -742,26 +531,168 @@ function renderFormatNote() {
     : "GLB is recommended for Meshy exports because it keeps embedded textures and PBR materials.";
 }
 
+function renderOptimizationControls() {
+  elements.ratioValue.textContent = `${elements.ratio.value}%`;
+  elements.errorValue.textContent = formatErrorValue(getErrorValue());
+}
+
+function applyProfileDefaults(profile, options = {}) {
+  const defaults = PROFILE_DEFAULTS[profile] || PROFILE_DEFAULTS.balanced;
+  elements.profile.value = profile;
+  elements.ratio.value = defaults.ratio;
+  elements.error.value = defaults.error;
+  elements.lockBorder.checked = defaults.lockBorder;
+  elements.quantize.checked = defaults.quantize;
+  elements.ratio.disabled = profile === "cleanup";
+  elements.error.disabled = profile === "cleanup";
+  renderOptimizationControls();
+
+  if (options.resetOptimized !== false) {
+    markOptimizedStale();
+    maybeGenerateLodPreview();
+  }
+}
+
+function getOptimizationOptions() {
+  const profile = elements.profile.value;
+  return {
+    profile,
+    ratio: Number(elements.ratio.value) / 100,
+    error: getErrorValue(),
+    lockBorder: elements.lockBorder.checked,
+    quantize: elements.quantize.checked,
+    simplify: profile !== "cleanup"
+  };
+}
+
+function getErrorValue() {
+  return Number(elements.error.value) / 10000;
+}
+
+function formatErrorValue(value) {
+  if (value <= 0) {
+    return "0";
+  }
+  return value.toFixed(value < 0.01 ? 3 : 2);
+}
+
+function markOptimizedStale() {
+  if (!optimizedArrayBuffer) {
+    return;
+  }
+
+  setOptimizedState(null);
+  setValidation("Optimization settings changed. Generate optimized output again.", "neutral");
+  renderAllStats();
+}
+
+function setOptimizedState(next) {
+  optimizedArrayBuffer = next?.arrayBuffer || null;
+  optimizedRoot = next?.root || null;
+  optimizedStats = next?.stats || null;
+  optimizationWorkerStats = next?.workerStats || null;
+  validationResult = next?.validation || null;
+
+  if (!optimizedRoot && activeMode === "optimized" && originalRoot) {
+    setPreviewMode("original", { fit: false });
+  }
+
+  elements.viewOptimized.disabled = !optimizedRoot;
+  elements.saveOptimized.disabled = !optimizedRoot || !validationResult?.ok || isBusy;
+}
+
+function validateOptimizedModel(original, optimized, originalScene, optimizedScene) {
+  const errors = [];
+  const warnings = [];
+
+  if (!optimized || optimized.meshCount <= 0) {
+    errors.push("Optimized GLB has no meshes.");
+  }
+  if (!optimized || optimized.triangleCount <= 0) {
+    errors.push("Optimized GLB has no triangles.");
+  }
+  if (!optimized || optimized.totalBytes <= 0) {
+    errors.push("Optimized GLB is empty.");
+  }
+
+  if (original && optimized) {
+    if (optimized.materialCount === 0 && original.materialCount > 0) {
+      warnings.push("No materials were found after optimization.");
+    }
+    if (optimized.textureCount === 0 && original.textureCount > 0) {
+      warnings.push("No textures were found after optimization.");
+    }
+    if (optimized.triangleCount > original.triangleCount && optimizationWorkerStats?.options?.profile !== "cleanup") {
+      warnings.push("Triangle count did not decrease.");
+    }
+  }
+
+  const originalBounds = computeBounds(originalScene);
+  const optimizedBounds = computeBounds(optimizedScene);
+  if (originalBounds && optimizedBounds) {
+    const originalSize = originalBounds.size.length();
+    const optimizedSize = optimizedBounds.size.length();
+    if (originalSize > 0) {
+      const ratio = optimizedSize / originalSize;
+      if (ratio < 0.25 || ratio > 4) {
+        errors.push("Optimized model bounds differ too much from the original.");
+      }
+    }
+  }
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    warnings,
+    originalBounds,
+    optimizedBounds
+  };
+}
+
+function renderValidationMessage(result) {
+  const parts = ["Optimized GLB validated."];
+  if (result.warnings.length) {
+    parts.push(result.warnings.join(" "));
+  }
+  return parts.join(" ");
+}
+
+function setValidation(message, state = "neutral") {
+  elements.validation.textContent = message;
+  elements.validation.classList.toggle("is-valid", state === "valid" || state === "warning");
+  elements.validation.classList.toggle("is-error", state === "error");
+}
+
 function setControlsEnabled(enabled) {
-  elements.save.disabled = !enabled || isBusy;
+  elements.generateOptimized.disabled = !enabled || isBusy;
+  elements.saveOriginal.disabled = !enabled || isBusy;
+  elements.saveOptimized.disabled = !optimizedRoot || !validationResult?.ok || isBusy;
+  elements.viewOriginal.disabled = !enabled;
+  elements.viewOptimized.disabled = !optimizedRoot;
   elements.resetCamera.disabled = !enabled;
   elements.toggleWireframe.disabled = !enabled;
+  controls.enabled = enabled;
 }
 
 function setBusy(nextBusy) {
   isBusy = nextBusy;
-  elements.save.disabled = nextBusy || !sourceRoot;
+  elements.generateOptimized.disabled = nextBusy || !originalRoot;
+  elements.saveOriginal.disabled = nextBusy || !originalRoot;
+  elements.saveOptimized.disabled = nextBusy || !optimizedRoot || !validationResult?.ok;
   elements.format.disabled = nextBusy;
-  elements.optimize.disabled = nextBusy;
-  elements.ratio.disabled = nextBusy || !elements.optimize.checked;
+  elements.profile.disabled = nextBusy;
+  elements.ratio.disabled = nextBusy || elements.profile.value === "cleanup";
+  elements.error.disabled = nextBusy || elements.profile.value === "cleanup";
+  elements.lockBorder.disabled = nextBusy;
+  elements.quantize.disabled = nextBusy;
 }
 
 function setPreviewWireframe(enabled) {
-  if (!previewRoot) {
+  if (!activeRoot) {
     return;
   }
 
-  previewRoot.traverse((object) => {
+  activeRoot.traverse((object) => {
     if (!object?.isMesh) {
       return;
     }
@@ -775,16 +706,18 @@ function setPreviewWireframe(enabled) {
   });
 }
 
-function computeSceneStats(root) {
+function computeSceneStats(root, totalBytes = 0, workerStats = null) {
   const materials = new Set();
   const textures = new Set();
   const stats = {
+    totalBytes,
     meshCount: 0,
     triangleCount: 0,
     vertexCount: 0,
     materialCount: 0,
     textureCount: 0,
-    geometryBytes: 0
+    geometryBytes: 0,
+    textureBytes: 0
   };
 
   root.traverse((object) => {
@@ -795,10 +728,8 @@ function computeSceneStats(root) {
     stats.meshCount += 1;
     const geometry = object.geometry;
     const geometryStats = getGeometryStats(geometry);
-    const position = geometry.getAttribute("position");
-    const index = geometry.index;
-    stats.vertexCount += position?.count || 0;
-    stats.triangleCount += index ? index.count / 3 : (position?.count || 0) / 3;
+    stats.vertexCount += geometryStats.vertexCount;
+    stats.triangleCount += geometryStats.triangleCount;
     stats.geometryBytes += geometryStats.byteLength;
 
     const objectMaterials = Array.isArray(object.material) ? object.material : [object.material];
@@ -814,7 +745,30 @@ function computeSceneStats(root) {
   stats.triangleCount = Math.floor(stats.triangleCount);
   stats.materialCount = materials.size;
   stats.textureCount = textures.size;
+
+  if (workerStats) {
+    stats.geometryBytes = workerStats.geometryBytes || stats.geometryBytes;
+    stats.textureBytes = workerStats.textureBytes || Math.max(0, totalBytes - stats.geometryBytes);
+  } else {
+    stats.textureBytes = Math.max(0, totalBytes - stats.geometryBytes);
+  }
+
   return stats;
+}
+
+function getGeometryStats(geometry) {
+  const position = geometry.getAttribute("position");
+  let byteLength = geometry.index?.array?.byteLength || 0;
+
+  for (const attribute of Object.values(geometry.attributes || {})) {
+    byteLength += attribute?.array?.byteLength || 0;
+  }
+
+  return {
+    vertexCount: position?.count || 0,
+    triangleCount: Math.floor((geometry.index?.count || position?.count || 0) / 3),
+    byteLength
+  };
 }
 
 function collectMaterialTextures(material, textures) {
@@ -837,22 +791,30 @@ function collectMaterialTextures(material, textures) {
   }
 }
 
-function hasMorphTargets(geometry) {
-  return Boolean(
-    geometry?.morphAttributes &&
-    Object.values(geometry.morphAttributes).some((attributes) => Array.isArray(attributes) && attributes.length)
-  );
+function computeBounds(root) {
+  if (!root) {
+    return null;
+  }
+
+  const box = new THREE.Box3().setFromObject(root);
+  if (box.isEmpty()) {
+    return null;
+  }
+  return {
+    box,
+    size: box.getSize(new THREE.Vector3()),
+    center: box.getCenter(new THREE.Vector3())
+  };
 }
 
-function buildOutputFilename(inputName = "", format = "glb", ratio = "") {
+function buildOutputFilename(inputName = "", format = "glb", optimized = false) {
   const withoutQuery = String(inputName || "meshy-model").split(/[?#]/)[0];
   const base = withoutQuery
     .replace(/\.(glb|gltf|obj)$/i, "")
     .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
     .replace(/\s+/g, " ")
     .trim() || "meshy-model";
-  const suffix = ratio ? `-optimized-${ratio}` : "";
-  return `${base}${suffix}.${format}`;
+  return `${base}${optimized ? "-optimized" : ""}.${format}`;
 }
 
 function downloadBlob(blob, filename) {
@@ -894,6 +856,24 @@ function base64ToBytes(base64) {
   return bytes;
 }
 
+function startProgressPulse(start, end) {
+  stopProgressPulse();
+  let value = start;
+  setProgress(value);
+  progressTimer = window.setInterval(() => {
+    value = Math.min(end, value + Math.max(1, (end - value) * 0.08));
+    setProgress(value);
+    setBusyModalProgress(value);
+  }, 350);
+}
+
+function stopProgressPulse() {
+  if (progressTimer) {
+    window.clearInterval(progressTimer);
+    progressTimer = 0;
+  }
+}
+
 function setStatus(message, isError = false) {
   elements.statusText.textContent = message;
   elements.statusText.classList.toggle("is-error", Boolean(isError));
@@ -904,8 +884,23 @@ function setProgress(value) {
   elements.progressBar.style.width = `${percent}%`;
 }
 
-function nextFrame() {
-  return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+function showBusyModal(title, message) {
+  elements.busyTitle.textContent = title;
+  elements.busyMessage.textContent = message;
+  elements.busyModal.hidden = false;
+  setBusyModalProgress(0);
+}
+
+function hideBusyModal() {
+  elements.busyModal.hidden = true;
+}
+
+function setBusyModalProgress(value, message = "") {
+  const percent = Math.max(0, Math.min(100, Number(value) || 0));
+  elements.busyBarFill.style.width = `${percent}%`;
+  if (message) {
+    elements.busyMessage.textContent = message;
+  }
 }
 
 function getPreviewBackground() {
@@ -941,6 +936,7 @@ function formatBytes(value) {
 }
 
 window.addEventListener("beforeunload", () => {
+  stopProgressPulse();
   if (animationFrame) {
     window.cancelAnimationFrame(animationFrame);
   }

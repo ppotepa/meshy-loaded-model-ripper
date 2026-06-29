@@ -117,6 +117,23 @@ p {
   gap: 8px;
 }
 
+.segmented {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.segmented button {
+  height: 34px;
+  border: 0;
+  border-radius: 0;
+}
+
+.segmented button + button {
+  border-left: 1px solid var(--border);
+}
+
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 360px;
@@ -267,6 +284,12 @@ textarea:focus {
   margin: 0;
 }
 
+.check-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .range-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 52px;
@@ -286,6 +309,36 @@ textarea:focus {
 
 .estimate-grid div {
   box-shadow: none;
+}
+
+.stats-table {
+  display: grid;
+  grid-template-columns: minmax(88px, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.stats-table span,
+.stats-table strong {
+  min-width: 0;
+  padding: 7px 8px;
+  overflow: hidden;
+  background: var(--surface);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stats-table span:nth-child(3n + 1) {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.stats-table strong {
+  color: var(--muted);
+  text-transform: uppercase;
 }
 
 button {
@@ -308,6 +361,30 @@ button {
   color: var(--accent-text);
   background: var(--success);
   border-color: var(--success);
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.validation {
+  min-height: 34px;
+  padding: 8px 10px;
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.validation.is-valid {
+  color: var(--success);
+}
+
+.validation.is-error {
+  color: var(--error);
 }
 
 .progress {
@@ -333,4 +410,56 @@ button {
 
 .status.is-error {
   color: var(--error);
+}
+
+.busy-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(18, 22, 28, 0.42);
+}
+
+.busy-modal[hidden] {
+  display: none;
+}
+
+.busy-panel {
+  display: grid;
+  gap: 10px;
+  width: min(420px, 100%);
+  padding: 18px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.busy-panel h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.busy-panel p {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.busy-bar {
+  height: 9px;
+  overflow: hidden;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+#busy-bar-fill {
+  width: 0;
+  height: 100%;
+  background: var(--accent);
+  transition: width 140ms ease;
 }

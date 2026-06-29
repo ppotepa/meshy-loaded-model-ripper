@@ -2,7 +2,7 @@
 
 Chrome/Edge MV3 extension for authorized first-party inspection of the Meshy viewer loader pipeline.
 
-The extension captures the decrypted GLB bytes produced while Meshy loads an encrypted `model.meshy` file into the viewport. It can quick-save the raw loaded GLB, or open an Export Studio with a WebGL preview, output format selection, and optional mesh simplification.
+The extension captures the decrypted GLB bytes produced while Meshy loads an encrypted `model.meshy` file into the viewport. It can quick-save the raw loaded GLB, or open an Export Studio with a WebGL preview, output format selection, and validated GLB optimization.
 
 It does not call Meshy official export endpoints and it does not attempt generic WebGL frame or GPU buffer scraping.
 
@@ -14,10 +14,12 @@ It does not call Meshy official export endpoints and it does not attempt generic
 - Captures successful worker `process` responses containing decrypted GLB `ArrayBuffer` data.
 - Shows model/task/worker status in the extension popup.
 - Opens Export Studio for the captured model.
-- Previews the captured model with Three.js and orbit controls.
-- Saves as `GLB` or `OBJ`.
-- Optionally simplifies mesh geometry with a target-detail slider during save.
-- Shows target triangle count, approximate MB before export, and exact saved MB after export.
+- Previews the original and optimized model with Three.js and orbit controls.
+- Saves original or optimized output as `GLB`; exports either preview as `OBJ`.
+- Generates optimized GLB in a Web Worker with glTF Transform and meshoptimizer.
+- Supports LOD-style optimization preview after moving the target slider.
+- Shows a progress modal while optimized output is generated and validated.
+- Shows original vs optimized total MB, geometry MB, texture MB, triangles, and vertices.
 - Keeps optional background task polling for detected jobs.
 
 ## How It Works
@@ -30,7 +32,10 @@ Meshy viewer requests model.meshy
   -> page-hook stores the bytes and a page-owned blob URL
   -> popup shows the loaded model
   -> Export Studio reads the bytes in chunks through the extension bridge
-  -> Three.js previews and exports GLB or OBJ
+  -> Three.js previews the original
+  -> optimize-worker generates a glTF Transform + meshoptimizer GLB variant
+  -> Export Studio validates and previews the optimized result
+  -> Save downloads original or optimized output
 ```
 
 The useful capture point is the decrypt worker response. The viewer parses the decrypted buffer before placing the model in the scene, so this is more reliable than trying to read the viewport after rendering.
@@ -66,7 +71,10 @@ package.json                 syntax check and build scripts
 3. Open the extension popup.
 4. Wait for the state to become `GLB ready`.
 5. Click `Open Export Studio`.
-6. Preview the model, choose `GLB` or `OBJ`, optionally enable `Optimize mesh`, then click `Save`.
+6. Preview the original model.
+7. Choose an optimization profile, then move the target slider or click `Generate Optimized`.
+8. Wait for the progress modal to finish and the optimized preview to validate.
+9. Click `Save Original` or `Save Optimized`.
 
 `Quick Save GLB` remains available in the popup when you only want the raw loaded GLB without preview or optimization.
 
@@ -90,10 +98,10 @@ The typo-compatible wrapper also works:
 
 - `GLB` is the recommended output because it preserves embedded textures and PBR materials.
 - `OBJ` is useful for geometry workflows but does not preserve Meshy PBR material data.
-- Mesh optimization uses a fast export-time triangle decimator on a clone of the captured model.
-- The optimizer preserves vertex attributes, UVs, normals, and material groups where possible.
-- Skinned or morph-target meshes are skipped during simplification to avoid corrupting animated geometry.
-- The MB estimate is approximate; the actual saved MB is measured from the generated file blob after export.
+- Mesh optimization uses glTF Transform and meshoptimizer in `extension/optimize-worker.js`.
+- Optimized output is parsed again with `GLTFLoader` before `Save Optimized` is enabled.
+- The target slider behaves like an LOD preview control: optimized output is generated after the slider change completes.
+- Optimized MB values are measured from the generated optimized GLB and parsed scene statistics.
 - The captured model is kept in the Meshy tab page hook for a limited time, so keep that tab open while using Export Studio.
 
 ## Scope

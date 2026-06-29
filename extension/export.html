@@ -14,6 +14,10 @@
           <p id="model-subtitle">Loading captured model...</p>
         </div>
         <div class="topbar-actions">
+          <div class="segmented" role="group" aria-label="Preview mode">
+            <button id="view-original" class="secondary is-active" type="button" disabled>Original</button>
+            <button id="view-optimized" class="secondary" type="button" disabled>Optimized</button>
+          </div>
           <button id="reset-camera" class="secondary" type="button" disabled>Reset View</button>
           <button id="toggle-wireframe" class="secondary" type="button" disabled>Wireframe</button>
         </div>
@@ -21,7 +25,7 @@
 
       <section class="workspace">
         <div class="preview-pane">
-          <canvas id="preview-canvas" aria-label="Captured model preview"></canvas>
+          <canvas id="preview-canvas" aria-label="Model preview"></canvas>
           <div class="preview-overlay">
             <div>
               <span>Meshes</span>
@@ -50,37 +54,63 @@
           </section>
 
           <section class="panel">
-            <div class="inline-heading">
-              <h2>Mesh</h2>
+            <h2>Optimization</h2>
+            <label for="profile">Profile</label>
+            <select id="profile">
+              <option value="cleanup">Lossless cleanup</option>
+              <option value="safe">Safe</option>
+              <option value="balanced" selected>Balanced</option>
+              <option value="aggressive">Aggressive</option>
+            </select>
+
+            <label for="ratio">Target triangles</label>
+            <div class="range-row">
+              <input id="ratio" type="range" min="5" max="100" step="5" value="58">
+              <strong id="ratio-value">58%</strong>
+            </div>
+
+            <label for="error">Max visual error</label>
+            <div class="range-row">
+              <input id="error" type="range" min="0" max="100" step="1" value="30">
+              <strong id="error-value">0.003</strong>
+            </div>
+
+            <div class="check-grid">
               <label class="toggle">
-                <input id="optimize" type="checkbox">
-                <span>Optimize mesh</span>
+                <input id="lock-border" type="checkbox" checked>
+                <span>Preserve borders</span>
+              </label>
+              <label class="toggle">
+                <input id="quantize" type="checkbox" checked>
+                <span>Quantize geometry</span>
               </label>
             </div>
 
-            <label for="ratio">Target detail</label>
-            <div class="range-row">
-              <input id="ratio" type="range" min="10" max="100" step="5" value="60" disabled>
-              <strong id="ratio-value">60%</strong>
-            </div>
+            <button id="generate-optimized" class="primary" type="button" disabled>Generate Optimized</button>
+            <div id="validation" class="validation">Optimized model not generated.</div>
+          </section>
 
-            <div class="estimate-grid">
-              <div>
-                <span>Target tris</span>
-                <strong id="estimate-tris">-</strong>
-              </div>
-              <div>
-                <span>Approx MB</span>
-                <strong id="estimate-size">-</strong>
-              </div>
-              <div>
-                <span>Input MB</span>
-                <strong id="input-size">-</strong>
-              </div>
-              <div>
-                <span>Saved MB</span>
-                <strong id="output-size">-</strong>
-              </div>
+          <section class="panel">
+            <h2>Stats</h2>
+            <div class="stats-table">
+              <div></div>
+              <strong>Original</strong>
+              <strong>Optimized</strong>
+              <span>Total MB</span>
+              <span id="original-total">-</span>
+              <span id="optimized-total">-</span>
+              <span>Geometry MB</span>
+              <span id="original-geometry">-</span>
+              <span id="optimized-geometry">-</span>
+              <span>Texture MB</span>
+              <span id="original-textures">-</span>
+              <span id="optimized-textures">-</span>
+              <span>Triangles</span>
+              <span id="original-tris">-</span>
+              <span id="optimized-tris">-</span>
+              <span>Vertices</span>
+              <span id="original-verts">-</span>
+              <span id="optimized-verts">-</span>
             </div>
           </section>
 
@@ -89,13 +119,26 @@
             <textarea id="source-url" readonly spellcheck="false" placeholder="Waiting for source URL"></textarea>
           </section>
 
-          <button id="save" class="primary" type="button" disabled>Save</button>
+          <div class="actions">
+            <button id="save-original" class="secondary" type="button" disabled>Save Original</button>
+            <button id="save-optimized" class="primary" type="button" disabled>Save Optimized</button>
+          </div>
           <div class="progress">
             <div id="progress-bar"></div>
           </div>
           <div id="status-text" class="status" role="status" aria-live="polite">Waiting for model data...</div>
         </aside>
       </section>
+
+      <div id="busy-modal" class="busy-modal" hidden>
+        <div class="busy-panel" role="status" aria-live="assertive">
+          <h2 id="busy-title">Generating LOD Preview</h2>
+          <p id="busy-message">Optimizing captured GLB...</p>
+          <div class="busy-bar">
+            <div id="busy-bar-fill"></div>
+          </div>
+        </div>
+      </div>
     </main>
 
     <script src="export-boot.js"></script>

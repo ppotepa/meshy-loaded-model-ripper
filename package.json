@@ -1,11 +1,12 @@
 {
   "name": "meshy-loaded-model-ripper",
-  "version": "0.3.3",
-  "description": "Chrome/Edge MV3 helper that captures Meshy loader GLB output, previews it, and exports GLB or OBJ.",
+  "version": "0.4.0",
+  "description": "Chrome/Edge MV3 helper that captures Meshy loader GLB output, previews it, and exports validated optimized GLB or OBJ.",
   "private": true,
   "scripts": {
-    "check": "node --check extension/background.js && node --check extension/content.js && node --check extension/page-hook.js && node --check extension/popup.js && node --check extension/export-boot.js && node --check extension/export.js",
-    "build": "powershell -ExecutionPolicy Bypass -File ./build.ps1"
+    "bundle:worker": "node scripts/bundle-worker.mjs",
+    "check": "node --check extension/background.js && node --check extension/content.js && node --check extension/page-hook.js && node --check extension/popup.js && node --check extension/export-boot.js && node --check extension/export.js && node --check src/optimize-worker-source.js && node --check extension/optimize-worker.js",
+    "build": "npm run bundle:worker && powershell -ExecutionPolicy Bypass -File ./build.ps1"
   },
   "repository": {
     "type": "git",
@@ -29,6 +30,11 @@
   },
   "homepage": "https://github.com/ppotepa/meshy-loaded-model-ripper#readme",
   "devDependencies": {
+    "@gltf-transform/core": "^4.4.0",
+    "@gltf-transform/extensions": "^4.4.0",
+    "@gltf-transform/functions": "^4.4.0",
+    "esbuild": "^0.28.1",
+    "meshoptimizer": "^1.1.1",
     "three": "^0.181.2"
   }
 }

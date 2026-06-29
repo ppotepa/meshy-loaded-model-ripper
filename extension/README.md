@@ -9,10 +9,12 @@ It captures the decrypted GLB payload created while Meshy loads an encrypted `mo
 Export Studio provides:
 
 - Three.js preview of the captured model,
+- original and optimized preview modes,
 - `GLB` and `OBJ` output selection,
-- optional mesh simplification with a target-detail slider,
-- estimated triangle count and approximate MB before saving,
-- exact saved MB after the export file is generated.
+- LOD-style target slider that generates optimized GLB variants after slider release,
+- glTF Transform + meshoptimizer optimization in a Web Worker,
+- progress modal while optimized output is generated and validated,
+- original vs optimized MB, geometry MB, texture MB, triangle, and vertex stats.
 
 ## Hook Path
 
@@ -24,7 +26,7 @@ fetch model.meshy
   -> popup and Export Studio request that captured model through the extension bridge
 ```
 
-The hook runs in the page `MAIN` world through `page-hook.js`. `content.js` forwards state and chunk requests between the page and extension. `background.js` injects scripts when needed, prepares Export Studio sessions, and polls detected task status.
+The hook runs in the page `MAIN` world through `page-hook.js`. `content.js` forwards state and chunk requests between the page and extension. `background.js` injects scripts when needed, prepares Export Studio sessions, and polls detected task status. `optimize-worker.js` is a bundled worker generated from `src/optimize-worker-source.js`.
 
 ## Local Load
 
