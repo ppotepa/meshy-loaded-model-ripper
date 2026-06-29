@@ -5,6 +5,8 @@ import { OBJExporter } from "./vendor/three/OBJExporter.js";
 import { OrbitControls } from "./vendor/three/OrbitControls.js";
 import { SimplifyModifier } from "./vendor/three/SimplifyModifier.js";
 
+window.__MESHY_EXPORT_STUDIO_STARTED__ = true;
+
 const CHUNK_SIZE = 512 * 1024;
 const params = new URLSearchParams(window.location.search);
 const sourceTabId = Number(params.get("sourceTabId") || 0);
@@ -107,6 +109,7 @@ async function init() {
   fitCameraToObject(previewRoot);
   setControlsEnabled(true);
   setProgress(100);
+  window.__MESHY_EXPORT_STUDIO_READY__ = true;
   setStatus("Ready.");
   renderEstimate();
 }

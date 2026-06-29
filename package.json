@@ -1,10 +1,10 @@
 {
   "name": "meshy-loaded-model-ripper",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Chrome/Edge MV3 helper that captures Meshy loader GLB output, previews it, and exports GLB or OBJ.",
   "private": true,
   "scripts": {
-    "check": "node --check extension/background.js && node --check extension/content.js && node --check extension/page-hook.js && node --check extension/popup.js && node --check extension/export.js",
+    "check": "node --check extension/background.js && node --check extension/content.js && node --check extension/page-hook.js && node --check extension/popup.js && node --check extension/export-boot.js && node --check extension/export.js",
     "build": "powershell -ExecutionPolicy Bypass -File ./build.ps1"
   },
   "repository": {
