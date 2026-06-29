@@ -1,9 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Meshy Loaded Model Ripper",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "First-party helper that captures Meshy loader GLB output, previews it, and exports validated optimized GLB or OBJ.",
   "permissions": ["storage", "activeTab", "scripting", "alarms"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; worker-src 'self';"
+  },
   "host_permissions": [
     "https://*.meshy.ai/*",
     "http://localhost/*",
