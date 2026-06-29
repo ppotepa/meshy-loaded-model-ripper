@@ -286,7 +286,7 @@ async function generateOptimizedModel() {
     setValidation(renderValidationMessage(validationResult), validationResult.warnings.length ? "warning" : "valid");
     setProgress(100);
     hideBusyModal();
-    setStatus(`Optimized GLB ready: ${formatBytes(originalArrayBuffer.byteLength)} -> ${formatBytes(optimizedArrayBuffer.byteLength)}.`);
+    setStatus(`Optimized GLB ready (${getOptimizedVariantLabel()}): ${formatBytes(originalArrayBuffer.byteLength)} -> ${formatBytes(optimizedArrayBuffer.byteLength)}.`);
   } catch (error) {
     stopProgressPulse();
     hideBusyModal();
@@ -365,7 +365,7 @@ async function saveModel(mode) {
   setStatus(`Saving ${isOptimized ? "optimized" : "original"} ${format.toUpperCase()}...`);
 
   try {
-    const filename = buildOutputFilename(capturedModel?.filename, format, isOptimized);
+    const filename = buildOutputFilename(capturedModel?.filename, format, isOptimized, getOptimizedFilenameSuffix());
     const blob = format === "glb"
       ? new Blob([buffer], { type: "model/gltf-binary" })
       : exportObj(root);
@@ -839,14 +839,42 @@ function computeBounds(root) {
   };
 }
 
-function buildOutputFilename(inputName = "", format = "glb", optimized = false) {
+function getOptimizedVariantLabel() {
+  const mode = optimizationWorkerStats?.report?.textureMode || optimizationWorkerStats?.options?.textureMode || "";
+  if (mode === "auto-strip") {
+    return "auto smallest, geometry only";
+  }
+  if (mode === "strip") {
+    return "geometry only";
+  }
+  if (mode === "keep") {
+    return "textured";
+  }
+  return "optimized";
+}
+
+function getOptimizedFilenameSuffix() {
+  const mode = optimizationWorkerStats?.report?.textureMode || optimizationWorkerStats?.options?.textureMode || "";
+  if (mode === "auto-strip") {
+    return "optimized-auto-smallest-geometry";
+  }
+  if (mode === "strip") {
+    return "optimized-geometry";
+  }
+  if (mode === "keep") {
+    return "optimized-textured";
+  }
+  return "optimized";
+}
+
+function buildOutputFilename(inputName = "", format = "glb", optimized = false, optimizedSuffix = "optimized") {
   const withoutQuery = String(inputName || "meshy-model").split(/[?#]/)[0];
   const base = withoutQuery
     .replace(/\.(glb|gltf|obj)$/i, "")
     .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
     .replace(/\s+/g, " ")
     .trim() || "meshy-model";
-  return `${base}${optimized ? "-optimized" : ""}.${format}`;
+  return `${base}${optimized ? `-${optimizedSuffix}` : ""}.${format}`;
 }
 
 function downloadBlob(blob, filename) {
