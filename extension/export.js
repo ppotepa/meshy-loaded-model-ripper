@@ -543,7 +543,7 @@ function renderFormatNote() {
 
 function renderTextureModeNote() {
   const notes = {
-    auto: "Auto keeps textures unless the final GLB would become larger, then falls back to a geometry-only optimized GLB.",
+    auto: "Auto generates textured and geometry-only optimized GLBs, then keeps the smaller result.",
     keep: "Keeps embedded material textures. Geometry can shrink while total GLB size still grows if textures are embedded.",
     strip: "Removes material textures for the smallest GLB. Geometry, UVs, normals, and material colors remain."
   };
@@ -653,7 +653,7 @@ function validateOptimizedModel(original, optimized, originalScene, optimizedSce
       warnings.push("Optimized output is geometry-only; material texture images were removed.");
     }
     if (optimizationWorkerStats?.report?.textureMode === "auto-strip") {
-      warnings.push("Auto mode selected the smaller geometry-only GLB because embedded textures made the textured GLB larger.");
+      warnings.push("Auto mode selected the smaller geometry-only GLB instead of the textured GLB.");
     }
   }
 

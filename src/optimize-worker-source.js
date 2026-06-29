@@ -74,11 +74,7 @@ async function optimize(message = {}) {
 
   const keepResult = await optimizeBuffer(input, options, { stripTextures: false, textureMode: "keep" });
 
-  if (
-    options.textureMode === "auto" &&
-    keepResult.arrayBuffer.byteLength > input.byteLength &&
-    keepResult.after.textureBytes > 0
-  ) {
+  if (options.textureMode === "auto" && keepResult.after.textureBytes > 0) {
     const stripResult = await optimizeBuffer(input, options, { stripTextures: true, textureMode: "auto-strip" });
     if (stripResult.arrayBuffer.byteLength < keepResult.arrayBuffer.byteLength) {
       return stripResult;
