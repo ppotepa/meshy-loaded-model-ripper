@@ -1,18 +1,7 @@
 import { WebIO } from "@gltf-transform/core";
 import { ALL_EXTENSIONS } from "@gltf-transform/extensions";
-import {
-  dedup,
-  prune,
-  weld,
-  simplify,
-  quantize,
-  reorder
-} from "@gltf-transform/functions";
-import {
-  MeshoptDecoder,
-  MeshoptEncoder,
-  MeshoptSimplifier
-} from "meshoptimizer";
+import { MeshoptDecoder } from "meshoptimizer/decoder";
+import { MeshoptSimplifier } from "meshoptimizer/simplifier";
 
 const DEFAULT_PROFILES = {
   cleanup: {
@@ -75,7 +64,6 @@ async function optimize(message = {}) {
 
   await Promise.all([
     MeshoptDecoder.ready,
-    MeshoptEncoder.ready,
     MeshoptSimplifier.ready
   ]);
 
@@ -88,34 +76,7 @@ async function optimize(message = {}) {
 
   const document = await io.readBinary(new Uint8Array(input));
   const before = inspectDocument(document, input.byteLength);
-  const transforms = [
-    dedup(),
-    prune(),
-    weld()
-  ];
-
-  if (options.simplify && options.ratio < 0.999) {
-    transforms.push(simplify({
-      simplifier: MeshoptSimplifier,
-      ratio: options.ratio,
-      error: options.error,
-      lockBorder: options.lockBorder
-    }));
-  }
-
-  transforms.push(prune());
-  transforms.push(reorder({ encoder: MeshoptEncoder }));
-
-  if (options.quantize) {
-    transforms.push(quantize({
-      quantizePosition: 14,
-      quantizeNormal: 10,
-      quantizeTexcoord: 12,
-      quantizeColor: 8
-    }));
-  }
-
-  await document.transform(...transforms);
+  const report = optimizeDocument(document, options);
 
   const output = await io.writeBinary(document);
   const after = inspectDocument(document, output.byteLength);
@@ -124,6 +85,7 @@ async function optimize(message = {}) {
     arrayBuffer: output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength),
     before,
     after,
+    report,
     options
   };
 }
@@ -140,6 +102,199 @@ function normalizeOptions(input = {}) {
     quantize: input.quantize ?? profile.quantize,
     simplify: input.simplify ?? profile.simplify
   };
+}
+
+function optimizeDocument(document, options) {
+  const report = {
+    simplifiedPrimitives: 0,
+    skippedPrimitives: 0,
+    inputTriangles: 0,
+    outputTriangles: 0
+  };
+
+  if (!options.simplify || options.ratio >= 0.999) {
+    return report;
+  }
+
+  for (const mesh of document.getRoot().listMeshes()) {
+    for (const primitive of mesh.listPrimitives()) {
+      const result = simplifyPrimitive(document, primitive, options);
+      report.inputTriangles += result.inputTriangles;
+      report.outputTriangles += result.outputTriangles;
+
+      if (result.changed) {
+        report.simplifiedPrimitives += 1;
+      } else {
+        report.skippedPrimitives += 1;
+      }
+    }
+  }
+
+  return report;
+}
+
+function simplifyPrimitive(document, primitive, options) {
+  const position = primitive.getAttribute("POSITION");
+  const mode = primitive.getMode();
+
+  if (!position || mode !== 4) {
+    return {
+      changed: false,
+      inputTriangles: getPrimitiveTriangleCount(primitive),
+      outputTriangles: getPrimitiveTriangleCount(primitive)
+    };
+  }
+
+  const sourceIndices = getPrimitiveIndices(primitive, position.getCount());
+  const inputTriangles = Math.floor(sourceIndices.length / 3);
+  const targetIndexCount = Math.max(3, Math.floor(sourceIndices.length * options.ratio / 3) * 3);
+
+  if (targetIndexCount >= sourceIndices.length) {
+    return {
+      changed: false,
+      inputTriangles,
+      outputTriangles: inputTriangles
+    };
+  }
+
+  const positionArray = getSimplifierPositionArray(position);
+  const [simplifiedIndices] = MeshoptSimplifier.simplify(
+    sourceIndices,
+    positionArray,
+    3,
+    targetIndexCount,
+    options.error,
+    options.lockBorder ? ["LockBorder"] : []
+  );
+
+  if (!simplifiedIndices || simplifiedIndices.length < 3) {
+    return {
+      changed: false,
+      inputTriangles,
+      outputTriangles: inputTriangles
+    };
+  }
+
+  const oldIndices = primitive.getIndices();
+  const compaction = createVertexCompaction(simplifiedIndices);
+  primitive.setIndices(document.createAccessor()
+    .setArray(compaction.indices)
+    .setType("SCALAR"));
+  disposeIfExclusive(oldIndices);
+
+  for (const semantic of primitive.listSemantics()) {
+    const accessor = primitive.getAttribute(semantic);
+    primitive.setAttribute(semantic, compactAccessor(document, accessor, compaction));
+    disposeIfExclusive(accessor);
+  }
+
+  for (const target of primitive.listTargets()) {
+    for (const semantic of target.listSemantics()) {
+      const accessor = target.getAttribute(semantic);
+      target.setAttribute(semantic, compactAccessor(document, accessor, compaction));
+      disposeIfExclusive(accessor);
+    }
+  }
+
+  return {
+    changed: true,
+    inputTriangles,
+    outputTriangles: Math.floor(compaction.indices.length / 3)
+  };
+}
+
+function getPrimitiveTriangleCount(primitive) {
+  const indices = primitive.getIndices();
+  const position = primitive.getAttribute("POSITION");
+  return Math.floor((indices?.getCount() || position?.getCount() || 0) / 3);
+}
+
+function getPrimitiveIndices(primitive, vertexCount) {
+  const indices = primitive.getIndices()?.getArray();
+  if (indices) {
+    return indices instanceof Uint32Array ? indices : new Uint32Array(indices);
+  }
+
+  const sequential = new Uint32Array(vertexCount);
+  for (let index = 0; index < vertexCount; index += 1) {
+    sequential[index] = index;
+  }
+
+  return sequential;
+}
+
+function getSimplifierPositionArray(position) {
+  const array = position.getArray();
+  if (array instanceof Float32Array && position.getElementSize() === 3) {
+    return array;
+  }
+
+  const count = position.getCount();
+  const output = new Float32Array(count * 3);
+  const element = [];
+
+  for (let index = 0; index < count; index += 1) {
+    position.getElement(index, element);
+    output[index * 3] = Number(element[0]) || 0;
+    output[index * 3 + 1] = Number(element[1]) || 0;
+    output[index * 3 + 2] = Number(element[2]) || 0;
+  }
+
+  return output;
+}
+
+function createVertexCompaction(indices) {
+  const oldToNew = new Map();
+  const orderedOldIndices = [];
+  const IndexArray = indices.length <= 65535 ? Uint16Array : Uint32Array;
+  const compactedIndices = new IndexArray(indices.length);
+
+  for (let index = 0; index < indices.length; index += 1) {
+    const oldIndex = indices[index];
+    let newIndex = oldToNew.get(oldIndex);
+
+    if (newIndex === undefined) {
+      newIndex = orderedOldIndices.length;
+      oldToNew.set(oldIndex, newIndex);
+      orderedOldIndices.push(oldIndex);
+    }
+
+    compactedIndices[index] = newIndex;
+  }
+
+  return {
+    indices: compactedIndices,
+    oldToNew,
+    orderedOldIndices
+  };
+}
+
+function compactAccessor(document, accessor, compaction) {
+  const sourceArray = accessor.getArray();
+  const elementSize = accessor.getElementSize();
+  const TargetArray = sourceArray.constructor;
+  const targetArray = new TargetArray(compaction.orderedOldIndices.length * elementSize);
+
+  for (let newIndex = 0; newIndex < compaction.orderedOldIndices.length; newIndex += 1) {
+    const oldIndex = compaction.orderedOldIndices[newIndex];
+    const sourceOffset = oldIndex * elementSize;
+    const targetOffset = newIndex * elementSize;
+
+    for (let component = 0; component < elementSize; component += 1) {
+      targetArray[targetOffset + component] = sourceArray[sourceOffset + component];
+    }
+  }
+
+  return document.createAccessor(accessor.getName())
+    .setArray(targetArray)
+    .setType(accessor.getType())
+    .setNormalized(accessor.getNormalized());
+}
+
+function disposeIfExclusive(property) {
+  if (property && property.listParents().length === 0) {
+    property.dispose();
+  }
 }
 
 function inspectDocument(document, totalBytes = 0) {
