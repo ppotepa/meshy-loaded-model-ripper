@@ -1,6 +1,7 @@
 # Build outputs
 dist/
 *.zip
+node_modules/
 
 # Captured website/source bundles and local analysis artifacts
 source/

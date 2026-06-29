@@ -41,6 +41,10 @@ async function handleMessage(message, sender) {
       return trackTask(message.payload, sender);
     case "GET_TRACKED_TASKS":
       return getTrackedTasks();
+    case "GET_CAPTURED_MODEL_META":
+      return relayCapturedModelRequest("GET_CAPTURED_MODEL_META", message.payload);
+    case "GET_CAPTURED_MODEL_CHUNK":
+      return relayCapturedModelRequest("GET_CAPTURED_MODEL_CHUNK", message.payload);
     default:
       throw new Error(`Unknown message type: ${message?.type || "missing"}`);
   }
@@ -138,6 +142,30 @@ async function getTrackedTasks() {
   };
 }
 
+async function relayCapturedModelRequest(type, payload = {}) {
+  const sourceTabId = Number(payload.sourceTabId);
+  if (!Number.isInteger(sourceTabId) || sourceTabId <= 0) {
+    throw new Error("Missing source Meshy tab ID.");
+  }
+
+  const message = {
+    type,
+    payload: {
+      ...payload,
+      sourceTabId
+    }
+  };
+
+  const firstResponse = await sendTabMessage(sourceTabId, message);
+  if (firstResponse?.ok !== false || !isMissingReceivingEnd(firstResponse.error)) {
+    return firstResponse || {};
+  }
+
+  await injectContentScript(sourceTabId);
+  await delay(150);
+  return sendTabMessage(sourceTabId, message);
+}
+
 async function pollTrackedTasks() {
   const stored = await chrome.storage.local.get({ [TRACKED_TASKS_STORAGE_KEY]: [] });
   const trackedTasks = Array.isArray(stored[TRACKED_TASKS_STORAGE_KEY])
@@ -211,10 +239,43 @@ function sendTabMessageNoop(tabId, message) {
   });
 }
 
+function sendTabMessage(tabId, message) {
+  return new Promise((resolve) => {
+    if (!Number.isInteger(tabId)) {
+      resolve({ ok: false, error: "Missing tab ID." });
+      return;
+    }
+
+    chrome.tabs.sendMessage(tabId, message, (response) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        resolve({ ok: false, error: error.message });
+        return;
+      }
+      resolve(response || {});
+    });
+  });
+}
+
+async function injectContentScript(tabId) {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["content.js"]
+  });
+}
+
 function ensureTaskPollAlarm() {
   chrome.alarms?.create(TASK_POLL_ALARM_NAME, {
     periodInMinutes: TASK_POLL_PERIOD_MINUTES
   });
+}
+
+function isMissingReceivingEnd(message) {
+  return String(message || "").includes("Receiving end does not exist");
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function fetchApiJson(path, options = {}) {

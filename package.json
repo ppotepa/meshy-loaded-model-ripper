@@ -1,0 +1,34 @@
+{
+  "name": "meshy-loaded-model-ripper",
+  "version": "0.3.0",
+  "description": "Chrome/Edge MV3 helper that captures Meshy loader GLB output, previews it, and exports GLB or OBJ.",
+  "private": true,
+  "scripts": {
+    "check": "node --check extension/background.js && node --check extension/content.js && node --check extension/page-hook.js && node --check extension/popup.js && node --check extension/export.js",
+    "build": "powershell -ExecutionPolicy Bypass -File ./build.ps1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ppotepa/meshy-loaded-model-ripper.git"
+  },
+  "keywords": [
+    "chrome-extension",
+    "edge-extension",
+    "threejs",
+    "glb",
+    "gltf",
+    "3d-models",
+    "mesh-optimization",
+    "webgl",
+    "meshy-ai"
+  ],
+  "license": "UNLICENSED",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/ppotepa/meshy-loaded-model-ripper/issues"
+  },
+  "homepage": "https://github.com/ppotepa/meshy-loaded-model-ripper#readme",
+  "devDependencies": {
+    "three": "^0.181.2"
+  }
+}

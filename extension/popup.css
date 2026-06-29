@@ -188,6 +188,12 @@ button:disabled {
   flex: 0 0 34px;
 }
 
+.actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 128px;
+  gap: 8px;
+}
+
 .status {
   min-height: 18px;
   color: var(--muted);

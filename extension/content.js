@@ -1,5 +1,5 @@
 (function installMeshyLoadedModelRipperContentScript() {
-  const INSTALL_KEY = "__MESHY_LOADED_MODEL_RIPPER_CONTENT_0_2_2__";
+  const INSTALL_KEY = "__MESHY_LOADED_MODEL_RIPPER_CONTENT_0_3_0__";
   if (globalThis[INSTALL_KEY]) {
     return;
   }
@@ -63,6 +63,10 @@
         return { state: getSerializableState() };
       case "SAVE_LOADED_MODEL":
         return saveLoadedModel(message.payload || {});
+      case "GET_CAPTURED_MODEL_META":
+        return getCapturedModelMeta(message.payload || {});
+      case "GET_CAPTURED_MODEL_CHUNK":
+        return getCapturedModelChunk(message.payload || {});
       case "TASK_STATUS_UPDATED":
         mergeTasks([normalizeTask(message.task)].filter(Boolean));
         return { state: getSerializableState() };
@@ -180,6 +184,25 @@
       state: getSerializableState(),
       filename: response.filename,
       model: normalizeLoadedModel(response.model)
+    };
+  }
+
+  async function getCapturedModelMeta(payload = {}) {
+    await ensurePageHook();
+    await refreshPageState({ soft: true });
+    const response = await requestPageHook("GET_CAPTURED_MODEL_META", payload, 5000);
+    return {
+      state: getSerializableState(),
+      model: normalizeLoadedModel(response.model)
+    };
+  }
+
+  async function getCapturedModelChunk(payload = {}) {
+    await ensurePageHook();
+    const response = await requestPageHook("GET_CAPTURED_MODEL_CHUNK", payload, 30000);
+    return {
+      state: getSerializableState(),
+      chunk: response.chunk
     };
   }
 

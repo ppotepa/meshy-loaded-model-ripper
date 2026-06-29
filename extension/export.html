@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Meshy Export Studio</title>
+    <link rel="stylesheet" href="export.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="title-block">
+          <h1 id="model-title">Meshy Export Studio</h1>
+          <p id="model-subtitle">Loading captured model...</p>
+        </div>
+        <div class="topbar-actions">
+          <button id="reset-camera" class="secondary" type="button" disabled>Reset View</button>
+          <button id="toggle-wireframe" class="secondary" type="button" disabled>Wireframe</button>
+        </div>
+      </header>
+
+      <section class="workspace">
+        <div class="preview-pane">
+          <canvas id="preview-canvas" aria-label="Captured model preview"></canvas>
+          <div class="preview-overlay">
+            <div>
+              <span>Meshes</span>
+              <strong id="stat-meshes">-</strong>
+            </div>
+            <div>
+              <span>Triangles</span>
+              <strong id="stat-tris">-</strong>
+            </div>
+            <div>
+              <span>Vertices</span>
+              <strong id="stat-verts">-</strong>
+            </div>
+          </div>
+        </div>
+
+        <aside class="control-pane">
+          <section class="panel">
+            <h2>Output</h2>
+            <label for="format">Format</label>
+            <select id="format">
+              <option value="glb">GLB - keeps materials/textures</option>
+              <option value="obj">OBJ - geometry only</option>
+            </select>
+            <p id="format-note" class="note">GLB is recommended for Meshy exports because it keeps embedded textures and PBR materials.</p>
+          </section>
+
+          <section class="panel">
+            <div class="inline-heading">
+              <h2>Mesh</h2>
+              <label class="toggle">
+                <input id="optimize" type="checkbox">
+                <span>Optimize mesh</span>
+              </label>
+            </div>
+
+            <label for="ratio">Target detail</label>
+            <div class="range-row">
+              <input id="ratio" type="range" min="10" max="100" step="5" value="60" disabled>
+              <strong id="ratio-value">60%</strong>
+            </div>
+
+            <div class="estimate-grid">
+              <div>
+                <span>Target tris</span>
+                <strong id="estimate-tris">-</strong>
+              </div>
+              <div>
+                <span>Approx size</span>
+                <strong id="estimate-size">-</strong>
+              </div>
+              <div>
+                <span>Input size</span>
+                <strong id="input-size">-</strong>
+              </div>
+              <div>
+                <span>Saved size</span>
+                <strong id="output-size">-</strong>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>Captured Source</h2>
+            <textarea id="source-url" readonly spellcheck="false" placeholder="Waiting for source URL"></textarea>
+          </section>
+
+          <button id="save" class="primary" type="button" disabled>Save</button>
+          <div class="progress">
+            <div id="progress-bar"></div>
+          </div>
+          <div id="status-text" class="status" role="status" aria-live="polite">Waiting for model data...</div>
+        </aside>
+      </section>
+    </main>
+
+    <script type="module" src="export.js"></script>
+  </body>
+</html>

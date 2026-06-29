@@ -1,7 +1,7 @@
 (function installMeshyLoadedModelRipperPageHook() {
   const PAGE_SOURCE = "MESHY_LOADED_MODEL_RIPPER_PAGE";
   const EXTENSION_SOURCE = "MESHY_LOADED_MODEL_RIPPER_EXTENSION";
-  const INSTALL_KEY = "__MESHY_LOADED_MODEL_RIPPER_PAGE_HOOK_0_2_2__";
+  const INSTALL_KEY = "__MESHY_LOADED_MODEL_RIPPER_PAGE_HOOK_0_3_0__";
 
   const TASKS_PATTERN = /\/web\/v2\/tasks(?:\/|$|\?)/;
   const ENCRYPTED_MODEL_PATTERN = /(?:\.meshy(?:[?#]|$)|\/misc\/cdn-models(?:\/|$|\?))/i;
@@ -65,6 +65,16 @@
 
     if (message.type === "DOWNLOAD_LATEST_LOADED_MODEL") {
       respond(message.requestId, () => downloadLatestLoadedModel(message.payload || {}));
+      return;
+    }
+
+    if (message.type === "GET_CAPTURED_MODEL_META") {
+      respond(message.requestId, () => getCapturedModelMeta(message.payload || {}));
+      return;
+    }
+
+    if (message.type === "GET_CAPTURED_MODEL_CHUNK") {
+      respond(message.requestId, () => getCapturedModelChunk(message.payload || {}));
     }
   }
 
@@ -87,7 +97,7 @@
 
   function hookWorkerConstructor() {
     const NativeWorker = window.Worker;
-    if (typeof NativeWorker !== "function" || NativeWorker.__meshyLoadedModelRipperConstructorHookedV022) {
+    if (typeof NativeWorker !== "function" || NativeWorker.__meshyLoadedModelRipperConstructorHookedV030) {
       return;
     }
 
@@ -104,13 +114,13 @@
     }
 
     MeshyRipperWorker.prototype = NativeWorker.prototype;
-    MeshyRipperWorker.__meshyLoadedModelRipperConstructorHookedV022 = true;
+    MeshyRipperWorker.__meshyLoadedModelRipperConstructorHookedV030 = true;
     window.Worker = MeshyRipperWorker;
   }
 
   function hookWorkerPrototype() {
     const proto = window.Worker?.prototype;
-    if (!proto || proto.__meshyLoadedModelRipperPrototypeHookedV022 || typeof proto.postMessage !== "function") {
+    if (!proto || proto.__meshyLoadedModelRipperPrototypeHookedV030 || typeof proto.postMessage !== "function") {
       return;
     }
 
@@ -121,7 +131,7 @@
       return originalPostMessage.apply(this, arguments);
     };
 
-    proto.__meshyLoadedModelRipperPrototypeHookedV022 = true;
+    proto.__meshyLoadedModelRipperPrototypeHookedV030 = true;
     workerPrototypePostMessageHooked = true;
   }
 
@@ -131,14 +141,14 @@
     }
 
     const state = ensureWorkerState(worker, scriptURL, source);
-    if (!workerPrototypePostMessageHooked && typeof worker.postMessage === "function" && !worker.__meshyLoadedModelRipperInstanceHookedV022) {
+    if (!workerPrototypePostMessageHooked && typeof worker.postMessage === "function" && !worker.__meshyLoadedModelRipperInstanceHookedV030) {
       const originalPostMessage = worker.postMessage;
       worker.postMessage = function postMessage(message, transfer) {
         inspectDecryptWorkerPostMessage(state, message);
         return originalPostMessage.apply(this, arguments);
       };
       try {
-        worker.__meshyLoadedModelRipperInstanceHookedV022 = true;
+        worker.__meshyLoadedModelRipperInstanceHookedV030 = true;
       } catch {
         // Some browser objects may reject expando fields.
       }
@@ -553,6 +563,7 @@
       filename,
       mimeType,
       size: arrayBuffer.byteLength,
+      arrayBuffer,
       objectUrl,
       encryptedUrl,
       sourceUrl: metadata.url || "",
@@ -682,6 +693,43 @@
     return {
       filename,
       model: serializeLoadedModel(model)
+    };
+  }
+
+  function getCapturedModelMeta(payload = {}) {
+    cleanupExpiredModels();
+    const model = findLoadedModel(payload.modelId);
+    if (!model?.arrayBuffer) {
+      throw new Error("No captured loaded model is available yet.");
+    }
+
+    return {
+      model: serializeLoadedModel(model)
+    };
+  }
+
+  function getCapturedModelChunk(payload = {}) {
+    cleanupExpiredModels();
+    const model = findLoadedModel(payload.modelId);
+    if (!model?.arrayBuffer) {
+      throw new Error("No captured loaded model is available yet.");
+    }
+
+    const totalSize = model.arrayBuffer.byteLength;
+    const offset = clampInteger(payload.offset, 0, totalSize, 0);
+    const length = clampInteger(payload.length, 1, 2 * 1024 * 1024, 512 * 1024);
+    const end = Math.min(totalSize, offset + length);
+    const bytes = new Uint8Array(model.arrayBuffer, offset, Math.max(0, end - offset));
+
+    return {
+      chunk: {
+        model: serializeLoadedModel(model),
+        offset,
+        byteLength: bytes.byteLength,
+        totalSize,
+        base64: bytesToBase64(bytes),
+        done: end >= totalSize
+      }
     };
   }
 
@@ -828,6 +876,17 @@
       detectedAt: model.detectedAt,
       expiresAt: model.expiresAt
     };
+  }
+
+  function findLoadedModel(modelId) {
+    if (modelId) {
+      const matching = loadedModels.find((model) => model.id === modelId);
+      if (matching) {
+        return matching;
+      }
+    }
+
+    return loadedModels[0] || null;
   }
 
   function detectModelKind(arrayBuffer, url = "", contentType = "") {
@@ -1026,6 +1085,27 @@
       .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
       .replace(/\s+/g, " ")
       .trim() || "meshy-loaded-model.glb";
+  }
+
+  function clampInteger(value, min, max, fallback) {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed)) {
+      return fallback;
+    }
+    return Math.min(max, Math.max(min, parsed));
+  }
+
+  function bytesToBase64(bytes) {
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+      const slice = bytes.subarray(offset, Math.min(bytes.length, offset + 0x8000));
+      let chunk = "";
+      for (let index = 0; index < slice.length; index += 1) {
+        chunk += String.fromCharCode(slice[index]);
+      }
+      binary += chunk;
+    }
+    return btoa(binary);
   }
 
   function isTaskLike(value) {

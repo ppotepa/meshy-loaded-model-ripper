@@ -25,6 +25,7 @@ function cacheElements() {
   elements.sceneStats = document.getElementById("scene-stats");
   elements.taskState = document.getElementById("task-state");
   elements.taskMeta = document.getElementById("task-meta");
+  elements.openStudio = document.getElementById("open-studio");
   elements.saveLoaded = document.getElementById("save-loaded");
   elements.status = document.getElementById("status");
 }
@@ -32,6 +33,7 @@ function cacheElements() {
 function bindEvents() {
   elements.refresh.addEventListener("click", () => refresh());
   elements.copySource.addEventListener("click", copySourceLink);
+  elements.openStudio.addEventListener("click", openExportStudio);
   elements.saveLoaded.addEventListener("click", saveLoadedModel);
 }
 
@@ -103,6 +105,35 @@ async function loadRecentTasksFallback() {
   }
 }
 
+async function openExportStudio() {
+  if (!activeTabId) {
+    setStatus("No active Meshy tab.", true);
+    return;
+  }
+
+  const model = pageState?.latestLoadedModel;
+  if (!model?.objectUrl) {
+    setStatus("No captured GLB is available yet.", true);
+    return;
+  }
+
+  const url = chrome.runtime.getURL(
+    `export.html?sourceTabId=${encodeURIComponent(activeTabId)}&modelId=${encodeURIComponent(model.id || "")}`
+  );
+
+  try {
+    await chrome.windows.create({
+      url,
+      type: "popup",
+      width: 1180,
+      height: 820,
+      focused: true
+    });
+  } catch {
+    await chrome.tabs.create({ url });
+  }
+}
+
 async function saveLoadedModel() {
   if (!activeTabId) {
     setStatus("No active Meshy tab.", true);
@@ -155,8 +186,10 @@ function renderState() {
   renderTaskState(task);
 
   const hasLoadedModel = Boolean(model?.objectUrl);
+  elements.openStudio.disabled = !hasLoadedModel;
   elements.saveLoaded.disabled = !hasLoadedModel;
-  elements.saveLoaded.textContent = hasLoadedModel ? "Save Loaded GLB" : "Waiting for Loaded GLB";
+  elements.openStudio.textContent = hasLoadedModel ? "Open Export Studio" : "Waiting for GLB";
+  elements.saveLoaded.textContent = hasLoadedModel ? "Quick Save GLB" : "Quick Save GLB";
   elements.copySource.disabled = !elements.sourceUrl.value;
 }
 
@@ -276,6 +309,7 @@ function renderTaskState(task) {
 
 function setBusy(isBusy) {
   elements.refresh.disabled = isBusy;
+  elements.openStudio.disabled = isBusy || !pageState?.latestLoadedModel?.objectUrl;
   elements.saveLoaded.disabled = isBusy || !pageState?.latestLoadedModel?.objectUrl;
   elements.copySource.disabled = isBusy || !elements.sourceUrl.value;
 }
