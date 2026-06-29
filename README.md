@@ -16,8 +16,8 @@ It does not call Meshy official export endpoints and it does not attempt generic
 - Opens Export Studio for the captured model.
 - Previews the captured model with Three.js and orbit controls.
 - Saves as `GLB` or `OBJ`.
-- Optionally simplifies mesh geometry with a target-detail slider.
-- Shows target triangle count and approximate output size before export.
+- Optionally simplifies mesh geometry with a target-detail slider during save.
+- Shows target triangle count, approximate MB before export, and exact saved MB after export.
 - Keeps optional background task polling for detected jobs.
 
 ## How It Works
@@ -90,9 +90,10 @@ The typo-compatible wrapper also works:
 
 - `GLB` is the recommended output because it preserves embedded textures and PBR materials.
 - `OBJ` is useful for geometry workflows but does not preserve Meshy PBR material data.
-- Mesh optimization uses Three.js `SimplifyModifier` on a clone of the captured model at save time.
+- Mesh optimization uses a fast export-time triangle decimator on a clone of the captured model.
+- The optimizer preserves vertex attributes, UVs, normals, and material groups where possible.
 - Skinned or morph-target meshes are skipped during simplification to avoid corrupting animated geometry.
-- The size estimate is approximate; the actual output size is shown after export.
+- The MB estimate is approximate; the actual saved MB is measured from the generated file blob after export.
 - The captured model is kept in the Meshy tab page hook for a limited time, so keep that tab open while using Export Studio.
 
 ## Scope

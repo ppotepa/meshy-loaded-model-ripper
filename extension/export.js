@@ -3,11 +3,11 @@ import { GLTFLoader } from "./vendor/three/GLTFLoader.js";
 import { GLTFExporter } from "./vendor/three/GLTFExporter.js";
 import { OBJExporter } from "./vendor/three/OBJExporter.js";
 import { OrbitControls } from "./vendor/three/OrbitControls.js";
-import { SimplifyModifier } from "./vendor/three/SimplifyModifier.js";
 
 window.__MESHY_EXPORT_STUDIO_STARTED__ = true;
 
 const CHUNK_SIZE = 512 * 1024;
+const MIN_OPTIMIZE_TRIANGLES = 24;
 const params = new URLSearchParams(window.location.search);
 const exportSessionId = params.get("sessionId") || "";
 const sourceTabId = Number(params.get("sourceTabId") || 0);
@@ -294,12 +294,15 @@ async function saveModel() {
     const exportRoot = cloneForExport(sourceRoot);
     await nextFrame();
 
-    let simplifyResult = { processed: 0, skipped: 0 };
+    let optimizeResult = createEmptyOptimizeResult();
     if (optimize && ratio < 0.995) {
       setStatus(`Optimizing mesh to ${Math.round(ratio * 100)}% target detail...`);
       setProgress(20);
       await nextFrame();
-      simplifyResult = simplifyScene(exportRoot, ratio);
+      optimizeResult = await optimizeSceneForExport(exportRoot, ratio, (progress) => {
+        setProgress(20 + Math.round(progress * 35));
+        setStatus(`Optimizing mesh: ${progress < 1 ? Math.round(progress * 100) : 100}%`);
+      });
     }
 
     setProgress(65);
@@ -315,12 +318,9 @@ async function saveModel() {
     setProgress(100);
 
     const optimizedText = optimize
-      ? ` Optimized ${simplifyResult.processed} mesh${simplifyResult.processed === 1 ? "" : "es"}.`
+      ? renderOptimizeSummary(optimizeResult)
       : "";
-    const skippedText = simplifyResult.skipped
-      ? ` Skipped ${simplifyResult.skipped} protected mesh${simplifyResult.skipped === 1 ? "" : "es"}.`
-      : "";
-    setStatus(`Saved ${filename} (${formatBytes(blob.size)}).${optimizedText}${skippedText}`);
+    setStatus(`Saved ${filename} (${formatBytes(blob.size)}).${optimizedText}`);
   } catch (error) {
     setStatus(error.message || String(error), true);
   } finally {
@@ -360,46 +360,269 @@ function cloneMaterialForExport(material) {
   return clone;
 }
 
-function simplifyScene(root, ratio) {
-  const modifier = new SimplifyModifier();
-  const result = {
-    processed: 0,
-    skipped: 0
-  };
-
-  root.updateMatrixWorld(true);
+async function optimizeSceneForExport(root, ratio, onProgress = () => {}) {
+  const meshes = [];
   root.traverse((object) => {
-    if (!object?.isMesh || !object.geometry) {
-      return;
-    }
-
-    if (object.isSkinnedMesh || hasMorphTargets(object.geometry)) {
-      result.skipped += 1;
-      return;
-    }
-
-    const position = object.geometry.getAttribute("position");
-    if (!position || position.count < 30) {
-      return;
-    }
-
-    const removeCount = Math.floor(position.count * (1 - ratio));
-    if (removeCount <= 0 || removeCount >= position.count - 3) {
-      return;
-    }
-
-    try {
-      const simplified = modifier.modify(object.geometry, removeCount);
-      simplified.computeVertexNormals();
-      object.geometry = simplified;
-      result.processed += 1;
-    } catch (error) {
-      console.warn("Mesh simplification failed.", error);
-      result.skipped += 1;
+    if (object?.isMesh && object.geometry) {
+      meshes.push(object);
     }
   });
 
+  const result = createEmptyOptimizeResult();
+  root.updateMatrixWorld(true);
+
+  for (let index = 0; index < meshes.length; index += 1) {
+    const object = meshes[index];
+    if (!object?.isMesh || !object.geometry) {
+      continue;
+    }
+
+    const before = getGeometryStats(object.geometry);
+    result.inputTriangles += before.triangleCount;
+    result.inputVertices += before.vertexCount;
+    result.inputGeometryBytes += before.byteLength;
+
+    if (object.isSkinnedMesh || object.isInstancedMesh || hasMorphTargets(object.geometry)) {
+      result.skipped += 1;
+      result.outputTriangles += before.triangleCount;
+      result.outputVertices += before.vertexCount;
+      result.outputGeometryBytes += before.byteLength;
+      continue;
+    }
+
+    if (before.triangleCount < MIN_OPTIMIZE_TRIANGLES || ratio >= 0.995) {
+      result.unchanged += 1;
+      result.outputTriangles += before.triangleCount;
+      result.outputVertices += before.vertexCount;
+      result.outputGeometryBytes += before.byteLength;
+      continue;
+    }
+
+    const optimizedGeometry = createDecimatedGeometry(object.geometry, ratio);
+    const after = getGeometryStats(optimizedGeometry);
+
+    if (!after.vertexCount || !after.triangleCount || after.triangleCount >= before.triangleCount) {
+      optimizedGeometry.dispose?.();
+      result.unchanged += 1;
+      result.outputTriangles += before.triangleCount;
+      result.outputVertices += before.vertexCount;
+      result.outputGeometryBytes += before.byteLength;
+      continue;
+    }
+
+    object.geometry = optimizedGeometry;
+    result.processed += 1;
+    result.outputTriangles += after.triangleCount;
+    result.outputVertices += after.vertexCount;
+    result.outputGeometryBytes += after.byteLength;
+
+    if (index % 2 === 0) {
+      onProgress((index + 1) / Math.max(1, meshes.length));
+      await nextFrame();
+    }
+  }
+
+  onProgress(1);
   return result;
+}
+
+function createDecimatedGeometry(geometry, ratio) {
+  const sourcePosition = geometry.getAttribute("position");
+  if (!sourcePosition) {
+    return geometry.clone();
+  }
+
+  const groups = getGeometryGroups(geometry);
+  const vertexMap = new Map();
+  const nextAttributeValues = new Map();
+  const nextIndices = [];
+  const nextGroups = [];
+
+  for (const [name] of Object.entries(geometry.attributes)) {
+    nextAttributeValues.set(name, []);
+  }
+
+  for (const group of groups) {
+    const sourceTriangleCount = Math.floor(group.count / 3);
+    if (sourceTriangleCount <= 0) {
+      continue;
+    }
+
+    const targetTriangleCount = Math.max(1, Math.min(sourceTriangleCount, Math.round(sourceTriangleCount * ratio)));
+    const groupStart = nextIndices.length;
+
+    for (let targetTriangle = 0; targetTriangle < targetTriangleCount; targetTriangle += 1) {
+      const sourceTriangle = Math.min(
+        sourceTriangleCount - 1,
+        Math.floor((targetTriangle * sourceTriangleCount) / targetTriangleCount)
+      );
+      const triangleStart = group.start + sourceTriangle * 3;
+
+      for (let corner = 0; corner < 3; corner += 1) {
+        const sourceVertex = getSourceVertexIndex(geometry, triangleStart + corner);
+        let nextVertex = vertexMap.get(sourceVertex);
+
+        if (nextVertex === undefined) {
+          nextVertex = vertexMap.size;
+          vertexMap.set(sourceVertex, nextVertex);
+          copySourceVertexAttributes(geometry, sourceVertex, nextAttributeValues);
+        }
+
+        nextIndices.push(nextVertex);
+      }
+    }
+
+    const groupCount = nextIndices.length - groupStart;
+    if (groupCount > 0) {
+      nextGroups.push({
+        start: groupStart,
+        count: groupCount,
+        materialIndex: group.materialIndex || 0
+      });
+    }
+  }
+
+  const optimized = new THREE.BufferGeometry();
+  for (const [name, values] of nextAttributeValues.entries()) {
+    const attribute = geometry.getAttribute(name);
+    if (!attribute || !values.length) {
+      continue;
+    }
+
+    const ArrayType = attribute.array?.constructor || Float32Array;
+    optimized.setAttribute(
+      name,
+      new THREE.BufferAttribute(new ArrayType(values), attribute.itemSize, attribute.normalized === true)
+    );
+  }
+
+  const indexArray = vertexMap.size > 65535
+    ? new Uint32Array(nextIndices)
+    : new Uint16Array(nextIndices);
+  optimized.setIndex(new THREE.BufferAttribute(indexArray, 1));
+
+  for (const group of nextGroups) {
+    optimized.addGroup(group.start, group.count, group.materialIndex);
+  }
+
+  if (!optimized.getAttribute("normal")) {
+    optimized.computeVertexNormals();
+  }
+
+  optimized.computeBoundingBox();
+  optimized.computeBoundingSphere();
+  return optimized;
+}
+
+function getGeometryGroups(geometry) {
+  const drawCount = getGeometryDrawCount(geometry);
+  if (Array.isArray(geometry.groups) && geometry.groups.length) {
+    return geometry.groups
+      .map((group) => {
+        const start = clampInteger(group.start, 0, drawCount, 0);
+        const count = clampInteger(group.count, 0, drawCount - start, drawCount - start);
+        return {
+          start,
+          count,
+          materialIndex: group.materialIndex || 0
+        };
+      })
+      .filter((group) => group.count >= 3);
+  }
+
+  return [{
+    start: 0,
+    count: drawCount,
+    materialIndex: 0
+  }];
+}
+
+function getGeometryDrawCount(geometry) {
+  if (geometry.index) {
+    return geometry.index.count;
+  }
+  return geometry.getAttribute("position")?.count || 0;
+}
+
+function getSourceVertexIndex(geometry, drawIndex) {
+  return geometry.index ? geometry.index.getX(drawIndex) : drawIndex;
+}
+
+function copySourceVertexAttributes(geometry, sourceVertex, nextAttributeValues) {
+  for (const [name, values] of nextAttributeValues.entries()) {
+    const attribute = geometry.getAttribute(name);
+    if (!attribute) {
+      continue;
+    }
+
+    for (let component = 0; component < attribute.itemSize; component += 1) {
+      values.push(getAttributeComponent(attribute, sourceVertex, component));
+    }
+  }
+}
+
+function getAttributeComponent(attribute, vertexIndex, component) {
+  switch (component) {
+    case 0:
+      return attribute.getX(vertexIndex);
+    case 1:
+      return attribute.getY(vertexIndex);
+    case 2:
+      return attribute.getZ(vertexIndex);
+    case 3:
+      return attribute.getW(vertexIndex);
+    default:
+      return 0;
+  }
+}
+
+function getGeometryStats(geometry) {
+  const position = geometry.getAttribute("position");
+  let byteLength = geometry.index?.array?.byteLength || 0;
+
+  for (const attribute of Object.values(geometry.attributes || {})) {
+    byteLength += attribute?.array?.byteLength || 0;
+  }
+
+  return {
+    vertexCount: position?.count || 0,
+    triangleCount: Math.floor(getGeometryDrawCount(geometry) / 3),
+    byteLength
+  };
+}
+
+function createEmptyOptimizeResult() {
+  return {
+    processed: 0,
+    skipped: 0,
+    unchanged: 0,
+    inputTriangles: 0,
+    outputTriangles: 0,
+    inputVertices: 0,
+    outputVertices: 0,
+    inputGeometryBytes: 0,
+    outputGeometryBytes: 0
+  };
+}
+
+function renderOptimizeSummary(result) {
+  if (!result.processed) {
+    const skippedText = result.skipped ? ` Skipped ${result.skipped} protected mesh${result.skipped === 1 ? "" : "es"}.` : "";
+    return ` Optimization did not change export geometry.${skippedText}`;
+  }
+
+  const triangleText = `${formatNumber(result.inputTriangles)} -> ${formatNumber(result.outputTriangles)} tris`;
+  const byteText = `${formatBytes(result.inputGeometryBytes)} -> ${formatBytes(result.outputGeometryBytes)} geometry`;
+  const skippedText = result.skipped ? ` Skipped ${result.skipped} protected mesh${result.skipped === 1 ? "" : "es"}.` : "";
+  return ` Optimized ${result.processed} mesh${result.processed === 1 ? "" : "es"} (${triangleText}, ${byteText}).${skippedText}`;
+}
+
+function clampInteger(value, min, max, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, parsed));
 }
 
 function exportGlb(root) {
@@ -439,7 +662,8 @@ function renderCapturedModel() {
     capturedModel?.size ? formatBytes(capturedModel.size) : "",
     capturedModel?.taskId || ""
   ].filter(Boolean).join(" - ");
-  elements.inputSize.textContent = formatBytes(capturedModel?.size || originalArrayBuffer?.byteLength || 0);
+  elements.inputSize.textContent = formatBytes(getInputByteSize());
+  elements.outputSize.textContent = "Not saved";
   elements.sourceUrl.value = capturedModel?.encryptedUrl || capturedModel?.sourceUrl || "";
 }
 
@@ -447,6 +671,7 @@ function renderDownloadShell(model, totalSize) {
   elements.modelTitle.textContent = model?.taskName || model?.filename || "Captured Meshy model";
   elements.modelSubtitle.textContent = `Reading ${formatBytes(totalSize)} from the Meshy tab`;
   elements.inputSize.textContent = formatBytes(totalSize);
+  elements.outputSize.textContent = "Not saved";
   elements.sourceUrl.value = model?.encryptedUrl || model?.sourceUrl || "";
 }
 
@@ -478,13 +703,37 @@ function renderEstimate() {
   const targetTris = optimize
     ? Math.max(1, Math.round(sourceStats.triangleCount * ratio))
     : sourceStats.triangleCount;
-  const inputSize = capturedModel?.size || originalArrayBuffer?.byteLength || 0;
-  const estimatedSize = optimize
-    ? Math.round(inputSize * Math.max(0.2, 0.35 + ratio * 0.65))
-    : inputSize;
+  const estimatedSize = estimateOutputByteSize(elements.format.value, optimize, ratio, targetTris);
 
   elements.estimateTris.textContent = formatNumber(targetTris);
   elements.estimateSize.textContent = `~${formatBytes(estimatedSize)}`;
+}
+
+function estimateOutputByteSize(format, optimize, ratio, targetTriangles) {
+  const inputSize = getInputByteSize();
+  if (!sourceStats) {
+    return inputSize;
+  }
+
+  if (format === "obj") {
+    const targetVertices = optimize
+      ? Math.max(3, Math.round(sourceStats.vertexCount * ratio))
+      : sourceStats.vertexCount;
+    return Math.max(1024, Math.round(targetVertices * 62 + targetTriangles * 42));
+  }
+
+  if (!optimize) {
+    return inputSize;
+  }
+
+  const geometryBytes = sourceStats.geometryBytes || 0;
+  const nonGeometryBytes = Math.max(0, inputSize - geometryBytes);
+  const optimizedGeometryBytes = Math.round(geometryBytes * ratio);
+  return Math.max(1024, nonGeometryBytes + optimizedGeometryBytes + 4096);
+}
+
+function getInputByteSize() {
+  return capturedModel?.size || originalArrayBuffer?.byteLength || 0;
 }
 
 function renderFormatNote() {
@@ -534,7 +783,8 @@ function computeSceneStats(root) {
     triangleCount: 0,
     vertexCount: 0,
     materialCount: 0,
-    textureCount: 0
+    textureCount: 0,
+    geometryBytes: 0
   };
 
   root.traverse((object) => {
@@ -544,10 +794,12 @@ function computeSceneStats(root) {
 
     stats.meshCount += 1;
     const geometry = object.geometry;
+    const geometryStats = getGeometryStats(geometry);
     const position = geometry.getAttribute("position");
     const index = geometry.index;
     stats.vertexCount += position?.count || 0;
     stats.triangleCount += index ? index.count / 3 : (position?.count || 0) / 3;
+    stats.geometryBytes += geometryStats.byteLength;
 
     const objectMaterials = Array.isArray(object.material) ? object.material : [object.material];
     for (const material of objectMaterials) {
@@ -673,12 +925,19 @@ function formatBytes(value) {
   const units = ["B", "KB", "MB", "GB"];
   let size = bytes;
   let unitIndex = 0;
-  while (size >= 1024 && unitIndex < units.length - 1) {
-    size /= 1024;
+  while (size >= 1000 && unitIndex < units.length - 1) {
+    size /= 1000;
     unitIndex += 1;
   }
 
-  return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+  const digits = unitIndex === 0
+    ? 0
+    : size >= 100
+      ? 0
+      : size >= 10
+        ? 1
+        : 2;
+  return `${size.toFixed(digits)} ${units[unitIndex]}`;
 }
 
 window.addEventListener("beforeunload", () => {

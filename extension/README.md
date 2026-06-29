@@ -11,7 +11,8 @@ Export Studio provides:
 - Three.js preview of the captured model,
 - `GLB` and `OBJ` output selection,
 - optional mesh simplification with a target-detail slider,
-- estimated triangle count and approximate size before saving.
+- estimated triangle count and approximate MB before saving,
+- exact saved MB after the export file is generated.
 
 ## Hook Path
 
@@ -23,7 +24,7 @@ fetch model.meshy
   -> popup and Export Studio request that captured model through the extension bridge
 ```
 
-The hook runs in the page `MAIN` world through `page-hook.js`. `content.js` forwards state and chunk requests between the page and extension. `background.js` injects scripts when needed, relays captured-model chunks to Export Studio, and polls detected task status.
+The hook runs in the page `MAIN` world through `page-hook.js`. `content.js` forwards state and chunk requests between the page and extension. `background.js` injects scripts when needed, prepares Export Studio sessions, and polls detected task status.
 
 ## Local Load
 
