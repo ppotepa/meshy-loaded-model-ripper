@@ -56,6 +56,8 @@ function cacheElements() {
   elements.toggleWireframe = document.getElementById("toggle-wireframe");
   elements.format = document.getElementById("format");
   elements.formatNote = document.getElementById("format-note");
+  elements.textureMode = document.getElementById("texture-mode");
+  elements.textureModeNote = document.getElementById("texture-mode-note");
   elements.profile = document.getElementById("profile");
   elements.ratio = document.getElementById("ratio");
   elements.ratioValue = document.getElementById("ratio-value");
@@ -63,6 +65,7 @@ function cacheElements() {
   elements.errorValue = document.getElementById("error-value");
   elements.lockBorder = document.getElementById("lock-border");
   elements.quantize = document.getElementById("quantize");
+  elements.topology = document.getElementById("topology");
   elements.generateOptimized = document.getElementById("generate-optimized");
   elements.validation = document.getElementById("validation");
   elements.originalTotal = document.getElementById("original-total");
@@ -91,6 +94,10 @@ function cacheElements() {
 
 function bindEvents() {
   elements.format.addEventListener("change", renderFormatNote);
+  elements.textureMode.addEventListener("change", () => {
+    renderTextureModeNote();
+    markOptimizedStale();
+  });
   elements.profile.addEventListener("change", () => applyProfileDefaults(elements.profile.value));
   elements.ratio.addEventListener("input", renderOptimizationControls);
   elements.ratio.addEventListener("change", maybeGenerateLodPreview);
@@ -129,6 +136,8 @@ async function init() {
 
   initPreviewScene();
   applyProfileDefaults("balanced", { resetOptimized: false });
+  renderFormatNote();
+  renderTextureModeNote();
   setStatus(exportSessionId ? "Reading prepared export session..." : "Reading captured GLB from Meshy tab...");
 
   const loaded = await fetchCapturedModel();
@@ -254,6 +263,7 @@ async function generateOptimizedModel() {
     optimizationWorkerStats = {
       before: result.before || null,
       after: result.after || null,
+      report: result.report || null,
       options: result.options || options
     };
 
@@ -531,6 +541,15 @@ function renderFormatNote() {
     : "GLB is recommended for Meshy exports because it keeps embedded textures and PBR materials.";
 }
 
+function renderTextureModeNote() {
+  const notes = {
+    auto: "Auto keeps textures unless the final GLB would become larger, then falls back to a geometry-only optimized GLB.",
+    keep: "Keeps embedded material textures. Geometry can shrink while total GLB size still grows if textures are embedded.",
+    strip: "Removes material textures for the smallest GLB. Geometry, UVs, normals, and material colors remain."
+  };
+  elements.textureModeNote.textContent = notes[elements.textureMode.value] || notes.auto;
+}
+
 function renderOptimizationControls() {
   elements.ratioValue.textContent = `${elements.ratio.value}%`;
   elements.errorValue.textContent = formatErrorValue(getErrorValue());
@@ -561,6 +580,8 @@ function getOptimizationOptions() {
     error: getErrorValue(),
     lockBorder: elements.lockBorder.checked,
     quantize: elements.quantize.checked,
+    textureMode: elements.textureMode.value,
+    topology: elements.topology.value,
     simplify: profile !== "cleanup"
   };
 }
@@ -625,6 +646,15 @@ function validateOptimizedModel(original, optimized, originalScene, optimizedSce
     if (optimized.triangleCount > original.triangleCount && optimizationWorkerStats?.options?.profile !== "cleanup") {
       warnings.push("Triangle count did not decrease.");
     }
+    if (optimized.totalBytes > original.totalBytes) {
+      warnings.push(`Final GLB is ${formatBytes(optimized.totalBytes - original.totalBytes)} larger because packaging/textures outweighed geometry savings.`);
+    }
+    if (optimizationWorkerStats?.report?.textureMode === "strip") {
+      warnings.push("Optimized output is geometry-only; material texture images were removed.");
+    }
+    if (optimizationWorkerStats?.report?.textureMode === "auto-strip") {
+      warnings.push("Auto mode selected the smaller geometry-only GLB because embedded textures made the textured GLB larger.");
+    }
   }
 
   const originalBounds = computeBounds(originalScene);
@@ -685,6 +715,8 @@ function setBusy(nextBusy) {
   elements.error.disabled = nextBusy || elements.profile.value === "cleanup";
   elements.lockBorder.disabled = nextBusy;
   elements.quantize.disabled = nextBusy;
+  elements.textureMode.disabled = nextBusy;
+  elements.topology.disabled = true;
 }
 
 function setPreviewWireframe(enabled) {

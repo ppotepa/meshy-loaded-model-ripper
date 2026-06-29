@@ -51,6 +51,14 @@
               <option value="obj">OBJ - geometry only</option>
             </select>
             <p id="format-note" class="note">GLB is recommended for Meshy exports because it keeps embedded textures and PBR materials.</p>
+
+            <label for="texture-mode">Texture packaging</label>
+            <select id="texture-mode">
+              <option value="auto" selected>Auto smallest GLB</option>
+              <option value="keep">Keep materials/textures</option>
+              <option value="strip">Geometry only - smallest</option>
+            </select>
+            <p id="texture-mode-note" class="note">Auto keeps textures unless the final GLB would become larger, then falls back to a geometry-only optimized GLB.</p>
           </section>
 
           <section class="panel">
@@ -85,6 +93,13 @@
                 <span>Quantize geometry</span>
               </label>
             </div>
+
+            <label for="topology">Smallest surface unit</label>
+            <select id="topology" disabled>
+              <option value="triangles" selected>Triangles - GLB native</option>
+              <option value="quads" disabled>Quads - retopology future</option>
+            </select>
+            <p class="note">GLB renders meshes as triangles. Quad output requires a separate retopology pipeline and is not a size-only optimization.</p>
 
             <button id="generate-optimized" class="primary" type="button" disabled>Generate Optimized</button>
             <div id="validation" class="validation">Optimized model not generated.</div>

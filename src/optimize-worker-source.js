@@ -68,6 +68,27 @@ async function optimize(message = {}) {
   ]);
 
   const options = normalizeOptions(message.options || {});
+  if (options.textureMode === "strip") {
+    return optimizeBuffer(input, options, { stripTextures: true, textureMode: "strip" });
+  }
+
+  const keepResult = await optimizeBuffer(input, options, { stripTextures: false, textureMode: "keep" });
+
+  if (
+    options.textureMode === "auto" &&
+    keepResult.arrayBuffer.byteLength > input.byteLength &&
+    keepResult.after.textureBytes > 0
+  ) {
+    const stripResult = await optimizeBuffer(input, options, { stripTextures: true, textureMode: "auto-strip" });
+    if (stripResult.arrayBuffer.byteLength < keepResult.arrayBuffer.byteLength) {
+      return stripResult;
+    }
+  }
+
+  return keepResult;
+}
+
+async function optimizeBuffer(input, options, outputOptions = {}) {
   const io = new WebIO()
     .registerExtensions(ALL_EXTENSIONS)
     .registerDependencies({
@@ -77,6 +98,11 @@ async function optimize(message = {}) {
   const document = await io.readBinary(new Uint8Array(input));
   const before = inspectDocument(document, input.byteLength);
   const report = optimizeDocument(document, options);
+  report.textureMode = outputOptions.textureMode || "keep";
+
+  if (outputOptions.stripTextures) {
+    report.strippedTextures = stripDocumentTextures(document);
+  }
 
   const output = await io.writeBinary(document);
   const after = inspectDocument(document, output.byteLength);
@@ -86,7 +112,10 @@ async function optimize(message = {}) {
     before,
     after,
     report,
-    options
+    options: {
+      ...options,
+      textureMode: report.textureMode
+    }
   };
 }
 
@@ -100,6 +129,8 @@ function normalizeOptions(input = {}) {
     error,
     lockBorder: input.lockBorder ?? profile.lockBorder,
     quantize: input.quantize ?? profile.quantize,
+    textureMode: ["auto", "keep", "strip"].includes(input.textureMode) ? input.textureMode : "auto",
+    topology: input.topology === "quads" ? "quads" : "triangles",
     simplify: input.simplify ?? profile.simplify
   };
 }
@@ -131,6 +162,39 @@ function optimizeDocument(document, options) {
   }
 
   return report;
+}
+
+function stripDocumentTextures(document) {
+  const root = document.getRoot();
+  const removed = {
+    textureSlots: 0,
+    textures: 0
+  };
+
+  for (const material of root.listMaterials()) {
+    const setters = [
+      "setBaseColorTexture",
+      "setEmissiveTexture",
+      "setNormalTexture",
+      "setOcclusionTexture",
+      "setMetallicRoughnessTexture"
+    ];
+
+    for (const setter of setters) {
+      if (typeof material[setter] === "function") {
+        material[setter](null);
+        removed.textureSlots += 1;
+      }
+    }
+  }
+
+  for (const texture of root.listTextures()) {
+    texture.setImage(null);
+    texture.dispose();
+    removed.textures += 1;
+  }
+
+  return removed;
 }
 
 function simplifyPrimitive(document, primitive, options) {
