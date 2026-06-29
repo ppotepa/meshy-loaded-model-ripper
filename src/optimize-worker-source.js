@@ -69,15 +69,30 @@ async function optimize(message = {}) {
 
   const options = normalizeOptions(message.options || {});
   if (options.textureMode === "strip") {
-    return optimizeBuffer(input, options, { stripTextures: true, textureMode: "strip" });
+    return optimizeBuffer(input, options, {
+      stripTextures: true,
+      textureMode: "strip",
+      requireNoTextures: true
+    });
   }
 
   const keepResult = await optimizeBuffer(input, options, { stripTextures: false, textureMode: "keep" });
 
   if (options.textureMode === "auto" && keepResult.after.textureBytes > 0) {
-    const stripResult = await optimizeBuffer(input, options, { stripTextures: true, textureMode: "auto-strip" });
-    if (stripResult.arrayBuffer.byteLength < keepResult.arrayBuffer.byteLength) {
-      return stripResult;
+    try {
+      const stripResult = await optimizeBuffer(input, options, {
+        stripTextures: true,
+        textureMode: "auto-strip",
+        requireNoTextures: true
+      });
+      stripResult.report.variants = buildVariantReport(keepResult, stripResult, "geometry");
+      keepResult.report.variants = buildVariantReport(keepResult, stripResult, "textured");
+
+      if (stripResult.arrayBuffer.byteLength < keepResult.arrayBuffer.byteLength) {
+        return stripResult;
+      }
+    } catch (error) {
+      keepResult.report.stripError = error?.message || String(error);
     }
   }
 
@@ -103,6 +118,10 @@ async function optimizeBuffer(input, options, outputOptions = {}) {
   const output = await io.writeBinary(document);
   const after = inspectDocument(document, output.byteLength);
 
+  if (outputOptions.requireNoTextures && (after.textureBytes > 0 || after.textures > 0)) {
+    throw new Error(`Geometry-only export still contains ${after.textures} textures (${after.textureBytes} bytes).`);
+  }
+
   return {
     arrayBuffer: output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength),
     before,
@@ -112,6 +131,16 @@ async function optimizeBuffer(input, options, outputOptions = {}) {
       ...options,
       textureMode: report.textureMode
     }
+  };
+}
+
+function buildVariantReport(keepResult, stripResult, selected) {
+  return {
+    selected,
+    texturedBytes: keepResult.arrayBuffer.byteLength,
+    geometryOnlyBytes: stripResult.arrayBuffer.byteLength,
+    texturedTextureBytes: keepResult.after.textureBytes || 0,
+    geometryOnlyTextureBytes: stripResult.after.textureBytes || 0
   };
 }
 
@@ -185,7 +214,11 @@ function stripDocumentTextures(document) {
   }
 
   for (const texture of root.listTextures()) {
-    texture.setImage(null);
+    texture
+      .setImage(null)
+      .setURI("")
+      .setMimeType("");
+    texture.detach();
     texture.dispose();
     removed.textures += 1;
   }

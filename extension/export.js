@@ -655,6 +655,13 @@ function validateOptimizedModel(original, optimized, originalScene, optimizedSce
     if (optimizationWorkerStats?.report?.textureMode === "auto-strip") {
       warnings.push("Auto mode selected the smaller geometry-only GLB instead of the textured GLB.");
     }
+    if (optimizationWorkerStats?.report?.stripError) {
+      warnings.push(`Geometry-only candidate failed: ${optimizationWorkerStats.report.stripError}`);
+    }
+    const variantSummary = renderVariantSummary(optimizationWorkerStats?.report?.variants);
+    if (variantSummary) {
+      warnings.push(variantSummary);
+    }
   }
 
   const originalBounds = computeBounds(originalScene);
@@ -685,6 +692,15 @@ function renderValidationMessage(result) {
     parts.push(result.warnings.join(" "));
   }
   return parts.join(" ");
+}
+
+function renderVariantSummary(variants) {
+  if (!variants) {
+    return "";
+  }
+
+  const selected = variants.selected === "geometry" ? "geometry-only" : "textured";
+  return `Auto compared textured ${formatBytes(variants.texturedBytes)} vs geometry-only ${formatBytes(variants.geometryOnlyBytes)} and selected ${selected}.`;
 }
 
 function setValidation(message, state = "neutral") {
