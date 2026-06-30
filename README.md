@@ -1,5 +1,6 @@
 > [!TIP]
 > THE MAIN PROBLEM OF JAVA SCRIPT IS THAT EVEN IF YOU OBFUSCATE (MINIFY) AND SPLIT IT INTO CHUNKS, YOU STILL EXPOSE THE SOURCE CODE
+> This hack basically hooks right before you load the model into the scene.
 
 # Meshy Loaded Model Ripper
 
