@@ -2,7 +2,7 @@
 > THE MAIN PROBLEM OF JAVA SCRIPT IS THAT EVEN IF YOU OBFUSCATE (MINIFY) AND SPLIT IT INTO CHUNKS, YOU STILL EXPOSE THE SOURCE CODE
 
 > [!TIP]
->  This hack basically hooks right before you load the model into the scene. Possibly there is a chance to have your own fork of three.js to have few more layers of security.
+>  This hack basically hooks right before you load the model into the scene. Possibly there is a chance to have your own fork of three.js to have few more layers of security, or for example displaying scene using random chunks.
 
 
 
