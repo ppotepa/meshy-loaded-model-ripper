@@ -1,3 +1,6 @@
+[!TIP]
+> THE MAIN PROBLEM OF JAVA SCRIPT IS THAT EVEN IF YOU OBFUSCATE (MINIFY) AND SPLIT IT INTO CHUNKS, YOU STILL EXPOSE THE SOURCE CODE
+
 # Meshy Loaded Model Ripper
 
 Chrome/Edge MV3 extension for authorized first-party inspection of the Meshy viewer loader pipeline.
